@@ -1,0 +1,20 @@
+@startuml
+skinparam sequence {
+  ArrowColor #22543d
+  ActorBorderColor #22543d
+  FontSize 11
+}
+actor 发送方
+actor 接收方
+
+== 滑动窗口：连续批量发送，流水线传输 ==
+发送方 -> 接收方 : 报文段1
+发送方 -> 接收方 : 报文段2
+发送方 -> 接收方 : 报文段3
+note over 发送方: 窗口范围内连续发送，无需逐个等待ACK
+
+接收方 --> 发送方 : ACK3 确认1~3全部收到
+note over 发送方: 收到ACK，窗口整体后滑，继续发送后续报文
+发送方 -> 接收方 : 报文段4
+发送方 -> 接收方 : 报文段5
+@enduml

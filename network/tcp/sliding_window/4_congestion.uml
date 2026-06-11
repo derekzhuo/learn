@@ -1,0 +1,44 @@
+@startuml
+skinparam sequence {
+  ArrowColor #744210
+  ActorBorderColor #744210
+  FontSize 11
+}
+participant 发送方
+participant 网络链路
+participant 接收方
+
+== 阶段1：网络通畅，cwnd 逐步放大 ==
+发送方 -> 网络链路 : 发送数据 cwnd=2048
+网络链路 -> 接收方 : 转发数据
+接收方 --> 发送方 : ACK
+note over 发送方
+传输正常，拥塞窗口cwnd增大
+end note
+
+发送方 -> 网络链路 : 提速发送 cwnd=4096
+
+== 阶段2：网络拥堵，出现丢包 ==
+发送方 -> 网络链路 : 发送数据
+note over 网络链路
+队列溢出，报文丢失
+end note
+
+== 阶段3：发送方感知拥堵，收缩cwnd ==
+发送方 --> 发送方 : 超时/检测到丢包
+note left
+判断网络拥堵
+发送方 -> 网络链路 : 大幅降速 cwnd=512
+end note
+
+note over 发送方
+cwnd收缩，主动限流
+避免网络进一步拥塞
+end note
+
+接收方 --> 发送方 : 持续返回正常rwnd
+note over 发送方,接收方
+当前限制因素为cwnd
+发送上限 = min(rwnd, cwnd)
+end note
+@enduml

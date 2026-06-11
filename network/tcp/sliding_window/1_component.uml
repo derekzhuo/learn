@@ -1,0 +1,28 @@
+@startuml
+left to right direction
+skinparam component {
+  BackgroundColor #f0f7ff
+  BorderColor #2c5282
+  FontSize 11
+}
+skinparam arrow Thickness 2
+
+package 发送方 {
+  [发送缓冲区]
+  [发送窗口 未确认待发送区间]
+  [拥塞窗口 cwnd 网络侧限速]
+}
+
+package 网络链路 {
+  [网络队列]
+}
+
+package 接收方 {
+  [接收缓冲区]
+  [接收窗口 rwnd 接收侧限速]
+  [上层应用 读取数据]
+}
+
+note bottom of [发送窗口 未确认待发送区间] : 发送上限 = min(rwnd, cwnd) 窗口随ACK逐步向后滑动
+note bottom of [接收窗口 rwnd 接收侧限速] : 每次ACK携带最新 rwnd 告知发送方剩余缓冲容量
+@enduml

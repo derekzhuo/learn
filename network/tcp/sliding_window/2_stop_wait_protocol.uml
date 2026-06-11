@@ -1,0 +1,19 @@
+@startuml
+skinparam sequence {
+  ArrowColor #991b1b
+  ActorBorderColor #991b1b
+  FontSize 11
+}
+
+actor 发送方
+actor 接收方
+
+== 停等协议：逐包等待ACK，链路空闲 ==
+发送方 -> 接收方 : 报文段1
+接收方 --> 发送方 : ACK1
+note over 发送方,接收方: 链路空闲，等待ACK
+
+发送方 -> 接收方 : 报文段2
+接收方 --> 发送方 : ACK2
+note over 发送方,接收方: 每发1包必须等待应答，高RTT场景带宽严重浪费
+@enduml

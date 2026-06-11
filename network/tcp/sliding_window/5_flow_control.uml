@@ -1,0 +1,36 @@
+@startuml
+skinparam sequence {
+  ArrowColor #2c5282
+  ActorBorderColor #2c5282
+  FontSize 11
+}
+participant 发送方
+participant 接收方
+
+== 场景：接收方处理变慢，缓冲区逐步占满 ==
+发送方 -> 接收方 : 批量发送数据
+接收方 --> 发送方 : ACK，rwnd = 4096
+note right: 缓冲区充足，允许发送4096字节
+
+发送方 -> 接收方 : 继续高速发送
+接收方 --> 发送方 : ACK，rwnd = 1024
+note right
+上层读取变慢，缓冲剩余变少
+窗口缩小，限制发送量
+end note
+
+发送方 -> 接收方 : 降低发送速率 遵循rwnd
+接收方 --> 发送方 : ACK，rwnd = 0
+note right
+接收缓冲区已满
+零窗口通知：暂停发送
+end note
+
+== 接收方释放缓冲区后 ==
+接收方 --> 发送方 : 窗口更新报文，rwnd = 2048
+note left
+应用读取数据，缓冲腾出空间
+恢复发送权限
+end note
+发送方 -> 接收方 : 恢复发送数据
+@enduml

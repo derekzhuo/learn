@@ -1,0 +1,42 @@
+@startuml
+skinparam sequence {
+  ArrowColor #44337a
+  ActorBorderColor #44337a
+  FontSize 11
+}
+participant 发送方
+participant 网络
+participant 接收方
+
+note over 发送方
+初始 rwnd=4096 cwnd=2048
+发送上限 = 2048
+end note
+
+发送方 -> 网络 : 窗口内连续发多组报文
+网络 -> 接收方 : 转发
+接收方 --> 发送方 : ACK，rwnd=3072
+note over 接收方
+应用读取部分数据，窗口小幅缩小
+end note
+
+发送方 --> 发送方: 收到ACK，发送窗口向后滑动
+发送方 -> 网络 : 继续发送，cwnd小幅增大
+
+网络 --> 网络 : 链路拥堵，报文丢失
+发送方 --> 发送方: 检测丢包，cwnd快速收缩
+note left
+拥塞控制生效，主动降速
+end note
+
+接收方 --> 发送方 : ACK，rwnd=1024
+note right
+接收方缓冲区紧张，流量控制进一步限速
+end note
+
+note over 发送方
+发送上限 = min(1024, 收缩后cwnd)
+双窗口共同约束速率
+end note
+发送方 -> 网络 : 低速发送，匹配两端状态
+@enduml
