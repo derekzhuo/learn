@@ -1,0 +1,59 @@
+@startuml
+skinparam sequence {
+  ArrowColor #235789
+  ActorBorderColor #235789
+  LifeLineBorderColor #235789
+  FontSize 11
+  MaxMessageSize 35
+}
+
+actor "用户态应用" as App
+participant "MMU + 页表" as MMU
+participant "Linux 内核/驱动" as Kernel
+participant "PCIe 总线" as PCIe
+participant "FPGA BAR 寄存器" as FPGA
+
+' ===================== 第一部分：mmap 初始化（仅执行1次） =====================
+== 阶段1：mmap 初始化（内核仅做地址映射，无数据传输）==
+App -> Kernel: mmap() 申请地址映射
+Kernel -> Kernel: 进入 bridge_mmap
+Kernel -> Kernel: 校验 minor、BAR 地址、权限
+Kernel -> MMU: remap_pfn_range 写入页表
+note over Kernel,MMU
+建立映射：
+用户虚拟地址 ↔ PCIe BAR 物理地址
+此后内核不再介入数据通路
+end note
+Kernel --> App: 返回映射后的虚拟地址 ptr
+
+' ===================== 第二部分：mmap 后 读写数据（核心：内核完全旁路） =====================
+== 阶段2：mmap 方式读写数据（高频操作）==
+App -> App: *ptr = 0xABCD  // 指针写内存
+App -> MMU: 地址访问触发MMU翻译
+MMU -> MMU: 查表：虚拟地址 → BAR物理地址
+MMU -> PCIe: 发起PCIe写总线事务
+PCIe -> FPGA: 数据写入寄存器
+note over MMU,FPGA
+全程：无系统调用、无内核代码执行
+内核**感知不到**本次写操作
+end note
+
+FPGA --> PCIe: 写完成应答
+PCIe --> MMU: 总线应答
+MMU --> App: 指令执行完成
+
+' ===================== 第三部分：传统 read/write 方式（全程内核中转） =====================
+== 阶段3：传统 write 方式（无mmap，对比参考）==
+App -> Kernel: write(fd, buf, 4) 系统调用
+Kernel -> Kernel: 进入 char_ctrl_write
+Kernel -> Kernel: copy_from_user 用户→内核拷贝
+Kernel -> PCIe: iowrite32 发起PCIe写
+PCIe -> FPGA: 写入寄存器
+FPGA --> PCIe: 完成
+PCIe --> Kernel: 硬件应答
+Kernel --> App: write 调用返回
+note over App,Kernel
+每次读写都触发系统调用
+内核必须参与数据拷贝+硬件操作
+end note
+@enduml

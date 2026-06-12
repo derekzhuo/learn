@@ -1,0 +1,47 @@
+@startuml
+skinparam class {
+    BackgroundColor #E8F4FF
+    BorderColor #2E5EAA
+    FontName Consolas
+}
+skinparam arrow {
+    Thickness 2
+    Color #2E5EAA
+}
+
+title 驱动核心结构体关系图
+
+class "struct class" as Class {
+  + const char *name
+  + struct module *owner
+}
+
+class "struct device" as Device {
+  + struct class *class
+  + dev_t devt
+}
+
+class "dev_t" as DevNo {
+  主设备号 + 次设备号
+}
+
+class "struct cdev" as Cdev {
+  + dev_t dev
+  + const file_operations *ops
+  + struct module *owner
+}
+
+class "struct file_operations" as Fops {
+  + open()
+  + read()
+  + write()
+  + poll()
+  + ioctl()
+  + release()
+}
+
+Device --> Class
+Device --> DevNo
+Cdev --> DevNo
+Cdev --> Fops
+@enduml

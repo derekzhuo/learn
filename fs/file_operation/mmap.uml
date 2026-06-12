@@ -1,0 +1,75 @@
+@startuml
+skinparam sequenceArrowThickness 2
+skinparam note {
+    BackgroundColor #F7FCFF
+    BorderColor #88BBDD
+    FontSize 12
+}
+
+note over App, VFS
+mmap 内存映射核心原理（最重要）
+1. 把文件直接映射到【进程虚拟内存空间】
+2. 不拷贝数据、不占用read/write缓冲区
+3. 读：缺页中断从磁盘加载到物理内存
+4. 写：直接修改内存，内核异步刷盘
+5. 减少一次copy_to_user，比read/write快
+end note
+
+box "【用户态 User Space】" #LightYellow
+actor App
+end box
+
+box "【内核态 Kernel Space】" #LightCyan
+participant "VFS" as VFS
+participant "file结构体" as File
+participant "inode" as Inode
+participant "VM区域" as VMA
+participant "页表" as PageTable
+end box
+
+database "Disk文件" as Disk
+
+' ========== 流程开始 ============
+App -> VFS: <color:red>①</color> mmap(addr, length, fd, offset)
+activate VFS
+
+' 1. 找到文件
+VFS -> File: <color:red>②</color> 通过fd找到struct file
+activate File
+File --> VFS: 返回关联的inode
+deactivate File
+
+' 2. 检查文件是否支持mmap
+VFS -> Inode: <color:red>③</color> 检查inode是否支持mmap
+activate Inode
+Inode --> VFS: 支持
+deactivate Inode
+
+' 3. 创建虚拟内存区域 VMA
+VFS -> VMA: <color:red>④</color> 创建VMA虚拟内存区域
+note right: 记录：文件、偏移、权限、映射类型
+
+' 4. 建立映射关系（不加载数据！）
+VFS -> PageTable: <color:red>⑤</color> 建立【虚拟地址→文件】映射
+note right: 关键：此时不加载任何数据，只建立关系
+
+' 5. 返回用户态虚拟地址
+VFS --> App: <color:red>⑥</color> 返回映射好的虚拟地址
+deactivate VFS
+
+' ========== 真正访问数据时（缺页中断） ============
+note over App,Disk #FFEEEE
+用户态第一次读写内存 → 触发缺页中断
+end note
+
+App -> App: <color:red>⑦</color> 访问mmap返回的内存地址
+App --> VFS: <color:red>⑧</color> 触发缺页中断(page fault)
+activate VFS
+
+VFS -> Disk: <color:red>⑨</color> 读取文件数据到物理内存
+Disk --> VFS: 数据加载完成
+
+VFS -> PageTable: <color:red>⑩</color> 更新页表：虚拟地址→物理内存
+VFS --> App: <color:red>⑪</color> 恢复执行，用户可直接读写内存
+deactivate VFS
+@enduml

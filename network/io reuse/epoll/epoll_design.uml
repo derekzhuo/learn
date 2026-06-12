@@ -1,0 +1,59 @@
+@startuml
+skinparam sequenceArrowThickness 2
+skinparam note {
+  BackgroundColor #f7fcff
+  BorderColor #88bbee
+}
+skinparam box {
+  LineColor #333
+}
+
+box "【用户态 User Space】" #LightYellow
+actor App
+end box
+
+box "【内核态 Kernel Space】" #LightCyan
+participant "Syscall\n系统调用" as Sys
+participant "eventpoll\n(epoll 本体:红黑树+就绪队列)" as Ep
+participant "设备驱动\n(NIC/Socket/Pipe)" as Dev
+end box
+
+'===== 1. 创建 epoll 句柄 =====
+App -> Sys: <color:red>①</color> epoll_create()
+Sys -> Ep: 创建 eventpoll 对象
+activate Ep
+note right: 初始化：红黑树(rbr)+就绪链表(rdlist)+等待队列
+Sys --> App: 返回 epfd (epoll 文件描述符)
+
+'===== 2. 添加监听 fd (epoll_ctl ADD) =====
+App -> Sys: <color:red>②</color> epoll_ctl(ADD, fd, EPOLLIN|ET)
+activate Sys
+Sys -> Ep: 创建 epitem，插入**红黑树**
+note left: 红黑树：快速查找 fd 是否已经添加
+Sys -> Dev: <color:red>③</color> 向设备驱动**注册回调函数**
+Dev --> Dev: 保存回调：数据到达时唤醒 epoll
+deactivate Sys
+
+'===== 3. 阻塞等待事件 (epoll_wait) =====
+App -> Sys: <color:red>④</color> epoll_wait(events, maxevents, timeout)
+activate Sys
+Sys -> Ep: 检查就绪队列 rdlist 是否为空
+Ep -> Sys: 为空 → 进程**休眠**，加入等待队列
+note right: 不占用CPU，不轮询
+
+'===== 4. 数据到达，设备触发事件 =====
+Dev -> Dev: <color:red>⑤</color> 网络数据到达网卡 → 缓冲区可读
+Dev -> Ep: <color:red>⑥</color> 调用注册的回调函数
+activate Ep
+Ep -> Ep: 将对应 fd 的 epitem 加入**就绪队列 rdlist**
+note left: 核心！只加入链表，O(1)
+Ep -> Ep: 唤醒等待队列里的用户进程
+deactivate Ep
+
+'===== 5. 进程唤醒，返回就绪 fd =====
+Sys -> Ep: <color:red>⑦</color> 从 rdlist 拷贝所有就绪事件到用户态
+Ep --> Sys: 返回就绪 fd 列表
+Sys --> App: <color:red>⑧</color> 返回就绪事件数量，结束阻塞
+deactivate Sys
+
+@enduml

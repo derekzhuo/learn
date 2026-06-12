@@ -1,0 +1,58 @@
+@startuml
+skinparam sequenceArrowThickness 2
+skinparam note {
+    BackgroundColor #F7FCFF
+    BorderColor #88BBDD
+    FontSize 12
+}
+
+note over App
+poll核心：使用struct pollfd数组，不再固定fd位图；逻辑整体和select近似
+1.用户传入pollfd数组，内核遍历每个fd调用f_op->poll
+2.无就绪则进程挂载全部fd等待队列、休眠
+3.任一fd就绪/超时唤醒，再次全量遍历搜集就绪事件
+4.回填revents到pollfd，返回就绪总数
+end note
+
+box "用户态" #LightYellow
+actor App
+end box
+box "内核" #LightCyan
+participant SYSCALL as "sys_poll"
+participant POLLLOOP as "轮询逻辑"
+participant FD1_WQ as "fd1等待队列"
+participant FD2_WQ as "fd2等待队列"
+participant SCHED as "进程调度"
+end box
+box "硬件设备" #Gray
+participant DEV_IRQ as "设备中断"
+end box
+
+App->SYSCALL:poll(pollfd[], nfds, timeout_ms)
+activate SYSCALL
+
+SYSCALL->POLLLOOP:拷贝pollfd数组到内核缓冲区
+activate POLLLOOP
+POLLLOOP->POLLLOOP:遍历所有fd，逐个调用file_operations->poll()
+
+alt 存在就绪fd
+POLLLOOP->POLLLOOP:填充每个pollfd.revents就绪标记
+POLLLOOP-->SYSCALL:汇总就绪数量
+else 全部fd未就绪
+POLLLOOP->FD1_WQ:当前进程加入fd1等待队列
+POLLLOOP->FD2_WQ:当前进程加入fd2等待队列
+POLLLOOP->SCHED:置TASK_INTERRUPTIBLE，schedule休眠让出CPU
+deactivate POLLLOOP
+
+' 就绪触发唤醒
+DEV_IRQ-->FD1_WQ:数据就绪，驱动wake_up
+FD1_WQ->SCHED:进程改为TASK_RUNNING入运行队列
+SCHED-->POLLLOOP:进程被调度恢复运行
+activate POLLLOOP
+POLLLOOP->POLLLOOP:再次全量遍历所有fd，刷新revents
+end alt
+
+POLLLOOP-->SYSCALL:就绪计数+更新pollfd结果
+SYSCALL-->App:结果拷贝回用户空间，返回就绪fd个数
+deactivate SYSCALL
+@enduml

@@ -1,0 +1,58 @@
+@startuml
+skinparam sequenceArrowThickness 2
+skinparam note {
+    BackgroundColor #F7FCFF
+    BorderColor #88BBDD
+    FontSize 12
+}
+
+note over App, VFS
+<b>普通文件系统 open() 完整流程</b>
+- inode: 文件本体
+- dentry: 文件名->inode 映射
+- file: 进程打开的文件实例
+- fd: 文件描述符(进程私有)
+end note
+
+box "【用户态 User Space】" #LightYellow
+actor App
+end box
+
+box "【内核态 Kernel Space】" #LightCyan
+participant "VFS 虚拟文件系统" as VFS
+participant "super_block" as SB
+participant "dentry cache" as Dentry
+participant "inode manager" as Inode
+participant "file struct" as File
+end box
+
+database "Disk" as Disk
+
+App -> VFS: <color:red>①</color> open("/home/test.txt", O_RDONLY)
+activate VFS
+
+VFS -> VFS: <color:red>②</color> 路径拆分解析
+note right: / -> home -> test.txt
+
+VFS -> Dentry: <color:red>③</color> 查找 dentry (dcache)
+activate Dentry
+Dentry --> VFS: 返回目标 dentry
+deactivate Dentry
+
+VFS -> Inode: <color:red>④</color> 通过 dentry 获取 inode
+activate Inode
+Inode -> SB: 读取文件系统信息
+SB --> Inode: 返回 inode 操作集
+Inode --> VFS: 返回有效 inode
+deactivate Inode
+
+VFS -> File: <color:red>⑤</color> 分配 struct file
+activate File
+note right: 绑定 dentry, inode, f_pos=0
+File --> VFS: 返回 file 对象
+deactivate File
+
+VFS -> VFS: <color:red>⑥</color> 分配文件描述符 fd
+VFS --> App: <color:red>⑦</color> 返回 fd
+deactivate VFS
+@enduml

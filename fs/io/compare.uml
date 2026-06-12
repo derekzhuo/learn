@@ -1,0 +1,60 @@
+@startuml
+skinparam sequenceArrowThickness 2
+skinparam note {
+    BackgroundColor #F7FCFF
+    BorderColor #88BBDD
+    FontSize 12
+}
+note over IO多路复用对比
+select/poll：调用时全量遍历fd、进程挂所有fd等待队列；
+epoll：ctl阶段注册fd+回调，就绪主动入就绪链表，wait只取就绪项；
+底层全部复用file_operations->poll接口，靠poll_table区分实现
+end note
+
+box "用户态" #LightYellow
+actor App
+end box
+
+box "内核三层模型对比" #LightCyan
+participant SEL as "select"
+participant POL as "poll"
+participant EPO as "epoll(create/ctl/wait)"
+end box
+
+box "VFS底层统一" #LightGreen
+participant POLL_FN as "f_op->poll(统一驱动接口)"
+participant DEV_WQ as "设备等待队列"
+end box
+
+===== select流程 =====
+App->SEL:select(fd_set数组,timeout)
+SEL->POLL_FN:每次调用全量遍历全部fd逐个poll()
+note right of SEL:fd_set定长上限，每次用户<->内核全拷贝位图
+alt 无就绪
+SEL->DEV_WQ:进程挂载全部fd等待队列，休眠
+DEV_WQ-->SEL:任一设备就绪wake_up，唤醒后再次全量遍历所有fd
+end
+SEL-->App:改写fd_set，返回就绪数
+
+===== poll流程 =====
+App->POL:poll(pollfd[],nfds,timeout)
+POL->POLL_FN:每次调用全量遍历数组所有fd逐个poll()
+note right of POL:无fd上限，pollfd存events/revents，仍每次全拷贝数组
+alt 无就绪
+POL->DEV_WQ:进程挂载全部fd等待队列，休眠
+DEV_WQ-->POL:任一就绪唤醒，再次全量遍历刷新revents
+end
+POL-->App:回填revents，返回就绪数
+
+===== epoll流程 =====
+App->EPO:epoll_create() → 创建红黑树+就绪链表rdlist
+App->EPO:epoll_ctl(ADD) → 一次性调用poll注册fd+回调
+note right of EPO:红黑树存监听fd，注册epoll专属回调
+EPO->POLL_FN:ctl阶段仅执行1次poll，epitem挂入设备WQ
+App->EPO:epoll_wait()
+alt rdlist为空
+EPO->EPO:进程阻塞在epoll自身等待队列
+DEV_WQ-->EPO:设备就绪→回调自动把fd推入rdlist，唤醒进程
+end
+EPO-->App:直接拷贝rdlist就绪事件，无需全量遍历
+@enduml

@@ -1,0 +1,51 @@
+@startuml
+skinparam sequenceArrowThickness 2
+skinparam note {
+    BackgroundColor #F7FCFF
+    BorderColor #88BBDD
+    FontSize 12
+}
+
+note over App, VFS
+umount 卸载核心流程
+1. 检查挂载点是否繁忙（有打开fd、进程占用）
+2. 检查脏页、脏inode，全部回写磁盘
+3. 释放 root inode、dentry
+4. 释放 super_block
+5. 从全局挂载链表移除
+6. 解除挂载点绑定
+end note
+
+box "【用户态 User Space】" #LightYellow
+actor App
+end box
+
+box "【内核态 Kernel Space】" #LightCyan
+participant "VFS 虚拟文件系统" as VFS
+participant "super_block" as SB
+participant "inode & pagecache" as InodeCache
+participant "挂载链表" as MountList
+end box
+database "Disk" as Disk
+
+App -> VFS: <color:red>①</color> umount("/mnt")
+activate VFS
+
+VFS -> VFS: <color:red>②</color> 查找挂载点信息
+VFS -> InodeCache: <color:red>③</color> 检查是否繁忙（busy）
+VFS -> InodeCache: <color:red>④</color> 同步脏数据、脏inode回写磁盘
+activate InodeCache
+InodeCache --> VFS: 数据全部落盘
+deactivate InodeCache
+
+VFS -> SB: <color:red>⑤</color> 释放 super_block 资源
+activate SB
+SB --> VFS: 超级块销毁
+deactivate SB
+
+VFS -> MountList: <color:red>⑥</color> 从内核挂载链表中移除
+VFS -> VFS: <color:red>⑦</color> 解除挂载点dentry绑定
+
+VFS --> App: <color:red>⑧</color> 卸载成功返回0
+deactivate VFS
+@enduml

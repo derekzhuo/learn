@@ -1,0 +1,45 @@
+@startuml
+skinparam sequenceArrowThickness 2
+skinparam note {
+    BackgroundColor #F7FCFF
+    BorderColor #88BBDD
+    FontSize 12
+}
+
+note over App, VFS
+statfs 核心流程（super_operations）
+1. 通过路径找到对应文件系统super_block
+2. 调用 s_op->statfs() 获取磁盘全局信息
+3. 从超级块/位图读取：总块、空闲块、块大小
+4. 拷贝结果到用户态
+end note
+
+box "【用户态 User Space】" #LightYellow
+actor App
+end box
+
+box "【内核态 Kernel Space】" #LightCyan
+participant "VFS 虚拟文件系统" as VFS
+participant "super_block" as SB
+participant "inode & dentry" as Inode
+end box
+
+App -> VFS: <color:red>①</color> statfs("/mnt", &buf)
+activate VFS
+
+VFS -> Inode: <color:red>②</color> 路径解析，获取目标inode
+activate Inode
+Inode --> VFS: 拿到对应文件系统的super_block
+deactivate Inode
+
+VFS -> SB: <color:red>③</color> 调用 sb->s_op->statfs()
+activate SB
+SB -> SB: <color:red>④</color> 读取超级块信息
+note right: 总块数、空闲块、文件数、块大小
+SB --> VFS: 填充统计信息
+deactivate SB
+
+VFS -> App: <color:red>⑤</color> 拷贝数据到用户态buf
+VFS --> App: <color:red>⑥</color> 返回成功
+deactivate VFS
+@enduml

@@ -1,0 +1,42 @@
+@startuml
+skinparam sequenceArrowThickness 2
+skinparam note {
+    BackgroundColor #F7FCFF
+    BorderColor #88BBDD
+    FontSize 12
+}
+note over App, VFS
+VFS三大操作集合划分规则
+1.super_operations：整个文件系统生命周期(挂载/卸载/块管理)
+2.inode_operations：不依赖fd，操作inode、dentry、目录、链接、改名删除
+3.file_operations：open拿到fd后，读写/偏移/刷盘/关闭/mmap
+end note
+
+box "用户态 系统调用" #LightYellow
+participant App
+end box
+
+box "VFS内核层" #LightCyan
+participant SuperOps as "super_operations\n文件系统全局"
+participant InodeOps as "inode_operations\ninode/dentry管理"
+participant FileOps as "file_operations\n已打开文件IO"
+end box
+
+'=========super_operations 调用链路=========
+App -> SuperOps: mount/umount/statfs
+note right of SuperOps: mount挂载、卸载、超级块维护、磁盘块统计
+
+'=========inode_operations 全量操作=========
+App -> InodeOps: create/mkdir
+App -> InodeOps: lookup(路径查找)
+App -> InodeOps: link(硬链接)/symlink(软链接)
+App -> InodeOps: unlink/rmdir
+App -> InodeOps: rename
+App -> InodeOps: readlink/setattr
+note right of InodeOps: 全部不需要open，无fd参与，操纵目录项&inode属性
+
+'=========file_operations 全量操作=========
+App -> FileOps: open(后半段)/read/write
+App -> FileOps: lseek/fsync/close/mmap
+note right of FileOps: 必须经过open获取fd，操作打开后的文件实例struct file
+@enduml

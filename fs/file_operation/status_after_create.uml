@@ -1,0 +1,40 @@
+@startuml
+skinparam NoteBackgroundColor #EEF5FF
+class super_block{
+  +s_inodes:inode链表
+  +s_op:super_operations
+}
+class inode{
+  +i_sb:super_block*
+  +i_fop:file_operations
+  +i_nlink:链接数
+}
+class dentry{
+  +d_name:"a.txt"
+  +d_parent:父dentry*
+  +d_inode:inode*
+}
+class file{
+  +f_path.dentry:dentry*
+  +f_inode:inode*
+  +f_op:file_operations
+  +f_pos:偏移
+}
+
+super_block o-- inode : 聚合(一个sb多个inode)
+inode o-- dentry : 聚合(一个inode多个dentry硬链接)
+dentry o-- file : 聚合(一个dentry多个打开file)
+
+note right of super_block #LightBlue
+整个ext4分区总控，管理空闲inode/块
+end note
+note right of inode #LightGreen
+文件本体元数据，磁盘inode在内存映射
+end note
+note bottom of dentry #Yellow
+文件名缓存，dcache哈希存储，连接名称与inode
+end note
+note left of file #Pink
+进程打开实例，独有读写偏移f_pos
+end note
+@enduml

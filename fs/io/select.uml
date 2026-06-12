@@ -1,0 +1,77 @@
+@startuml
+skinparam activity {
+  BackgroundColor #f9f9f9
+  BorderColor #333333
+}
+skinparam note {
+  BackgroundColor #F7FCFF
+  BorderColor #88BBDD
+  FontSize 12
+}
+
+note over App
+select 内核核心原理
+1. 拷贝 fd_set 到内核
+2. 遍历所有 fd，调用 f_op->poll() 检查是否就绪
+3. 全部未就绪：进程加入所有 fd 的等待队列 + 休眠
+4. 任意就绪/超时：唤醒进程，再次遍历收集就绪 fd
+5. 拷贝结果回用户态，返回就绪数量
+end note
+
+box "用户态" #LightYellow
+actor App
+end box
+
+box "内核态" #LightCyan
+participant "sys_select" as SYSCALL
+participant "poll 调度器" as POLL
+participant "fd1 等待队列" as WQ1
+participant "fd2 等待队列" as WQ2
+participant "进程调度器" as SCHED
+end box
+
+'=============================
+App -> SYSCALL: select(nfds, readfds, writefds, timeout)
+activate SYSCALL
+
+' 1. 拷贝参数
+SYSCALL -> SYSCALL: 拷贝 fd_set 从用户态到内核
+
+' 2. 循环检查所有 fd
+SYSCALL -> POLL: 遍历所有 fd，调用 fd->f_op->poll()
+activate POLL
+
+POLL -> POLL: 检查是否有就绪 fd
+
+alt 有 fd 就绪
+    POLL --> SYSCALL: 立即返回就绪数量
+else 无就绪 fd
+    ' 3. 进程加入所有 fd 的等待队列
+    POLL -> WQ1: 把进程加入 fd1 等待队列
+    POLL -> WQ2: 把进程加入 fd2 等待队列
+
+    ' 4. 进程休眠
+    POLL -> SCHED: 进程状态 = 可中断休眠
+    POLL -> SCHED: schedule() 让出CPU
+    deactivate POLL
+
+    '=============================
+    ' 唤醒条件：任意fd就绪 或 超时
+    '=============================
+    note over SCHED: 进程休眠，等待唤醒
+
+    WQ1 --> SCHED: 数据就绪 → wake_up 唤醒
+    WQ2 --> SCHED: 数据就绪 → wake_up 唤醒
+
+    ' 5. 唤醒后重新检查
+    SCHED --> POLL: 进程被调度恢复执行
+    activate POLL
+
+    POLL -> POLL: 再次遍历所有 fd，收集就绪 fd
+end alt
+
+' 6. 结果拷贝回用户态
+POLL --> SYSCALL: 返回就绪 fd 数量
+SYSCALL --> App: 返回就绪个数，并更新 fd_set
+deactivate SYSCALL
+@enduml

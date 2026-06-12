@@ -1,0 +1,92 @@
+@startuml
+skinparam sequenceArrowThickness 2
+skinparam note {
+    BackgroundColor #F7FCFF
+    BorderColor #88BBDD
+    FontSize 12
+}
+
+note over App
+epoll 内核核心设计
+1. epoll_create: 创建内核结构（红黑树 + 就绪链表）
+2. epoll_ctl: 增删改 fd，挂载到红黑树，注册回调函数
+3. epoll_wait: 只遍历【就绪链表】，O(1) 效率
+4. 数据就绪: 硬件中断 -> 回调函数 -> 自动加入就绪队列
+5. 进程只休眠一次，唤醒直接拿就绪列表，不用全量遍历
+end note
+
+box "用户态" #LightYellow
+actor App
+end box
+
+box "内核态" #LightCyan
+participant "epoll_create" as CREATE
+participant "epoll_ctl" as CTL
+participant "epoll_wait" as WAIT
+participant "红黑树 rbtree" as RB
+participant "就绪队列 rdlist" as LIST
+participant "等待队列" as WQ
+end box
+
+box "硬件/驱动" #Gray
+participant "设备中断" as IRQ
+end box
+
+' ==============================================
+' 第一步：创建 epoll 实例
+' ==============================================
+App -> CREATE: epoll_create()
+activate CREATE
+CREATE -> RB: 创建红黑树（存储所有监听fd）
+CREATE -> LIST: 创建就绪链表（存储就绪fd）
+CREATE --> App: 返回 epfd
+deactivate CREATE
+
+' ==============================================
+' 第二步：添加 fd 到 epoll（ctl）
+' ==============================================
+App -> CTL: epoll_ctl(epfd, ADD, fd, event)
+activate CTL
+CTL -> RB: 将 fd 插入红黑树
+CTL -> CTL: 为 fd 注册【回调函数】ep_poll_callback()
+CTL --> App: 添加成功
+deactivate CTL
+
+' ==============================================
+' 第三步：等待事件（epoll_wait）
+' ==============================================
+App -> WAIT: epoll_wait(epfd, events, max, timeout)
+activate WAIT
+
+WAIT -> LIST: 检查就绪链表是否为空
+
+alt 就绪链表不为空
+    LIST --> WAIT: 直接返回就绪 fd
+else 就绪链表为空
+    ' 休眠
+    WAIT -> WQ: 进程加入 epoll 等待队列
+    WAIT -> WQ: 进程休眠，让出 CPU
+    deactivate WAIT
+
+    ' ==============================================
+    ' 数据到达 → 自动回调 → 加入就绪队列
+    ' ==============================================
+    IRQ --> RB: 设备数据就绪（中断）
+    activate RB
+    RB -> RB: 调用 fd 注册的回调函数
+    RB -> LIST: **自动把 fd 加入就绪链表**
+    deactivate RB
+
+    ' 唤醒进程
+    LIST -> WQ: 唤醒等待进程
+    WQ --> WAIT: 进程恢复运行
+    activate WAIT
+end alt
+
+' ==============================================
+' 第四步：返回就绪 fd 给用户
+' ==============================================
+WAIT -> App: 拷贝就绪链表到用户态
+WAIT --> App: 返回就绪 fd 数量
+deactivate WAIT
+@enduml

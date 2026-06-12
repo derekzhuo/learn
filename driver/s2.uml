@@ -1,0 +1,65 @@
+@startuml
+skinparam sequenceArrowThickness 2
+skinparam note {
+    BackgroundColor #F7FCFF
+    BorderColor #88BBDD
+    FontSize 10
+}
+note over 字符驱动核心结构体绑定流程
+执行顺序：设备号(dev_t) → cdev → class → device → file_operations
+最终产出：/sys/class + /dev 设备节点
+end note
+
+box "驱动代码" #LightGreen
+participant DRV as "驱动模块"
+participant FOPS as "struct file_operations"
+end box
+
+box "内核对象" #LightCyan
+participant DEVNO as "dev_t 设备号"
+participant CDEV as "struct cdev"
+participant CLS as "struct class"
+participant DEV as "struct device"
+end box
+
+box "文件系统" #LightYellow
+participant SYS as "/sys/class"
+participant DEVFS as "/dev"
+end box
+
+' 1. 定义文件操作集（驱动功能入口）
+DRV -> FOPS: 定义 open/read/write/poll/ioctl/release
+
+' 2. 申请设备号
+DRV -> DEVNO: alloc_chrdev_region()
+note right: 生成 主设备号+次设备号
+
+' 3. 初始化 cdev，绑定 fops
+DRV -> CDEV: cdev_init(&cdev, &FOPS)
+note right: cdev.ops 指向 file_operations
+
+' 4. cdev 注册进内核
+DRV -> CDEV: cdev_add(&cdev, DEVNO, count)
+note right: cdev.dev = 设备号，内核建立映射
+
+' 5. 创建设备类
+DRV -> CLS: class_create(THIS_MODULE, "uvaps")
+CLS -> SYS: 生成 /sys/class/uvaps/
+
+' 6. 创建设备实例，关联 class & 设备号
+DRV -> DEV: device_create(CLS, NULL, DEVNO, NULL, "uvaps-0!xxx")
+DEV -> SYS: 在 /sys/class/uvaps/ 生成设备软链接
+DEV -> DEVFS: 触发uevent/devtmpfs，生成 /dev/uvaps-0!xxx
+
+' 7. 应用访问链路
+actor App as "用户应用"
+App -> DEVFS: open("/dev/uvaps-0!xxx")
+DEVFS -> CDEV: 根据设备号查找 cdev
+CDEV -> FOPS: 调用 fops->open/read/write/poll
+
+' 卸载逆序
+DRV -> DEV: device_destroy()
+DRV -> CLS: class_destroy()
+DRV -> CDEV: cdev_del()
+DRV -> DEVNO: unregister_chrdev_region()
+@enduml

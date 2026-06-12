@@ -1,0 +1,58 @@
+@startuml
+skinparam sequenceArrowThickness 2
+skinparam note {
+    BackgroundColor #F7FCFF
+    BorderColor #88BBDD
+    FontSize 12
+}
+
+note over VFS, App
+普通文件write流程
+1.用户调用write陷入内核
+2.fd查找file、inode
+3.数据写入PageCache(延迟落盘)
+4.标记页面为脏页
+5.后台pdflush/内核回写线程异步刷磁盘
+end note
+
+box "【用户态 User Space】" #LightYellow
+actor App
+end box
+
+box "【内核态 Kernel Space】" #LightCyan
+participant "VFS 虚拟文件系统" as VFS
+participant "file 结构体" as File
+participant "inode" as Inode
+participant "页缓存 PageCache" as Cache
+end box
+database "Disk" as Disk
+
+App -> VFS: <color:red>①</color> write(fd, user_buf, len)
+activate VFS
+
+VFS -> File: <color:red>②</color> 通过fd拿到file实例
+activate File
+File --> VFS: 关联inode、当前文件偏移f_pos
+deactivate File
+
+VFS -> Inode: <color:red>③</color> 权限校验、文件大小检查
+activate Inode
+Inode --> VFS: 校验通过
+deactivate Inode
+
+VFS -> Cache: <color:red>④</color> 分配/查找缓存页
+activate Cache
+VFS -> Cache: <color:red>⑤</color> copy_from_user，数据写入pagecache
+Cache -> Cache: <color:red>⑥</color> 页面标记为【脏页Dirty】
+Cache --> VFS: 写入缓存完成
+deactivate Cache
+
+VFS -> VFS: <color:red>⑦</color> 更新file文件偏移f_pos
+VFS --> App: <color:red>⑧</color> 返回成功写入字节数
+deactivate VFS
+
+' 异步落盘（不在本次系统调用里）
+note over Cache,Disk #FFEEEE
+异步：系统定时/内存不足时，内核线程把脏页刷入Disk
+end note
+@enduml

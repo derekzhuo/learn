@@ -1,0 +1,76 @@
+@startuml
+skinparam sequenceArrowThickness 2
+skinparam note {
+    BackgroundColor #F7FCFF
+    BorderColor #88BBDD
+}
+
+note over "完整字符驱动(含class/sysfs/udev/devtmpfs)"
+新增链路：class_create→sys/class → device_create→uevent→udev/devtmpfs→/dev节点
+创建顺序：alloc_chrdev_region→cdev_init→cdev_add→class_create→device_create
+卸载逆序：device_destroy→class_destroy→cdev_del→unregister_chrdev_region
+end note
+
+box "用户&驱动开发" #LightYellow
+actor DriverDev as "insmod/rmmod"
+actor App as "用户应用程序"
+end box
+
+box "内核子系统" #LightCyan
+participant MODULE as "模块子系统"
+participant CHRDEV as "cdev字符设备管理"
+participant DEVMODEL as "设备模型(class/sysfs)"
+participant SYSFS as "sysfs文件系统"
+participant UEVENT as "内核uevent事件源"
+participant DEVTMP as "devtmpfs内核节点创建"
+end box
+
+box "用户态守护进程" #LightBlue
+participant UDEV as "udev/mdev(用户态)"
+end box
+
+box "驱动代码" #LightGreen
+participant DRV as "自定义驱动(fops)"
+end box
+
+'1.insmod加载
+DriverDev->MODULE:insmod xxx.ko
+MODULE->DRV:执行module_init(drv_init)
+
+'2.cdev基础注册
+DRV->CHRDEV:alloc_chrdev_region 申请设备号dev_t
+DRV->DRV:cdev_init(cdev, my_fops)绑定文件操作集
+DRV->CHRDEV:cdev_add(cdev,devno,count)加入内核cdev哈希
+
+'3.【新增Class关键步骤】创建设备类
+DRV->DEVMODEL:class_create(THIS_MODULE,"mycls")
+DEVMODEL->SYSFS:在/sys/class/mycls 生成class目录
+SYSFS-->DEVMODEL:class目录创建完成
+
+'4.在class下创建设备device，触发uevent
+DRV->DEVMODEL:device_create(myclass,NULL,devno,NULL,"mydev")
+DEVMODEL->SYSFS:/sys/class/mycls/mydev生成设备属性文件
+DEVMODEL->UEVENT:发送ADD类型uevent热插拔事件(携带设备名、设备号)
+
+'5.两条路径生成/dev节点
+'路径A：devtmpfs内核直接创建(新版Linux默认)
+UEVENT->DEVTMP:devtmpfs_create_node
+DEVTMP->DEVTMP:vfs_mknod /dev/mydev
+
+'路径B：udev/mdev用户态监听uevent生成节点(老系统)
+UEVENT->UDEV:netlink发送uevent消息
+UDEV->UDEV:解析设备号+名称,mknod /dev/mydev
+
+'6.用户open访问设备
+App->VFS:open("/dev/mydev")
+VFS->CHRDEV:按设备号查找cdev
+CHRDEV->DRV:调用fops->open/read/write/poll
+
+'7.rmmod卸载(严格逆序释放)
+DriverDev->MODULE:rmmod xxx.ko
+MODULE->DRV:执行module_exit(drv_exit)
+DRV->DEVMODEL:device_destroy(myclass,devno) #删sys设备+触发remove uevent
+DRV->DEVMODEL:class_destroy(myclass) #删除/sys/class/mycls
+DRV->CHRDEV:cdev_del(&cdev)
+DRV->CHRDEV:unregister_chrdev_region(devno,count)
+@enduml

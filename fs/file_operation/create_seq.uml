@@ -1,0 +1,75 @@
+@startuml
+' 样式配置
+skinparam sequenceArrowThickness 2
+skinparam note {
+    BackgroundColor #f0f8ff
+    BorderColor #aabbcc
+    FontColor black
+}
+skinparam participant {
+    BackgroundColor #f9f9f9
+    BorderColor #333333
+}
+
+' 划分区域：用户态 / 内核态
+box "【用户态 User Space】" #LightYellow
+actor User
+end box
+
+box "【内核态 Kernel Space | VFS + 文件系统层】" #LightCyan
+participant VFS
+participant "Parent Inode\n(父目录test)" as ParentInode
+participant "Super Block\n(ext4超级块)" as SuperBlock
+participant "New Dentry\n(a.txt)" as Dentry
+participant "New Inode\n(文件inode)" as Inode
+participant "File Struct\n(打开文件句柄)" as File
+end box
+
+database "Disk 磁盘硬件" as Disk
+
+' 时序步骤+红色编号注释
+User -> VFS: <color:red>1</color> open("test/a.txt",O_CREAT,0644)【陷入系统调用，从用户态切内核态】
+activate VFS
+
+VFS -> VFS: <color:red>2</color> 路径拆分解析：/ → test → a.txt
+VFS -> ParentInode: lookup查找父目录inode
+activate ParentInode
+note right: 调用inode_operations->lookup，dcache查询目录项
+VFS <-- ParentInode: 返回父inode+所属super_block指针
+deactivate ParentInode
+
+VFS -> Dentry: <color:red>3</color> d_alloc()新建空dentry
+activate Dentry
+note left: d_name="a.txt", d_inode=NULL【负dentry占位】
+VFS <-- Dentry: 空dentry返回
+
+VFS -> SuperBlock: <color:red>4</color> 从超级块分配空闲inode编号
+activate SuperBlock
+note right: 依赖super_operations->alloc_inode，sb管理全局空闲inode
+SuperBlock -> Disk: 在磁盘inode区分配磁盘inode物理位置
+VFS <-- SuperBlock: 拿到inode号
+deactivate SuperBlock
+
+VFS -> Inode: <color:red>5</color> 初始化内存struct inode
+activate Inode
+note right: i_nlink=1、i_sb指向超级块、绑定ext4 file_operations
+VFS <-- Inode: 有效inode构造完成
+
+VFS -> Dentry: <color:red>6</color> d_instantiate(dentry,inode)绑定
+Dentry -> Inode: d_inode = &inode 建立指针关联
+note left: dentry与inode正式关联，文件名→文件本体打通
+
+VFS -> ParentInode: <color:red>7</color> 父目录inode追加目录记录(a.txt+ino)
+ParentInode -> Disk: 写入父目录磁盘数据区，更新父inode属性
+deactivate Inode
+
+VFS -> File: <color:red>8</color> 分配struct file打开实例
+activate File
+note right: f_dentry/f_inode挂载指针、f_pos=0读写偏移置零
+VFS <-- File: file构造完毕
+
+VFS -> User: <color:red>9</color> 分配fd，返回文件描述符【切回用户态】
+deactivate File
+deactivate Dentry
+deactivate VFS
+@enduml

@@ -1,0 +1,65 @@
+@startuml
+skinparam sequenceArrowThickness 2
+skinparam note {
+    BackgroundColor #F7FCFF
+    BorderColor #88BBDD
+    FontSize 12
+}
+
+note over App, VFS
+Linux阻塞/非阻塞IO内核逻辑
+1.无数据：阻塞进等待队列+休眠让出CPU；非阻塞直接-EAGAIN
+2.硬件就绪触发中断，驱动wake_up唤醒进程入就绪队列
+end note
+
+box "用户态" #LightYellow
+actor App
+end box
+box "系统调用" #LightCyan
+participant SYSCALL as "read系统调用"
+end box
+box "驱动层" #LightBlue
+participant DRV as "fops->read驱动"
+participant WAIT as "等待队列wq"
+end box
+box "调度" #Orange
+participant SCHED as "进程调度器"
+participant RUNQ as "运行队列"
+end box
+box "硬件" #Gray
+participant IRQ as "硬件中断"
+end box
+
+App->SYSCALL:read(fd,buf,len)
+activate SYSCALL
+SYSCALL->DRV:查询设备缓冲区数据
+activate DRV
+
+alt 数据就绪
+DRV-->SYSCALL:拷贝数据到用户空间
+SYSCALL-->App:返回读到字节数
+else 数据未就绪
+  alt O_NONBLOCK非阻塞
+    DRV-->SYSCALL:return -EAGAIN
+    SYSCALL-->App:返回-1
+  else 阻塞IO
+    DRV->WAIT:当前进程加入等待队列
+    DRV->SCHED:set_current_state(TASK_UNINTERRUPTIBLE)
+    DRV->SCHED:schedule()让出CPU
+    deactivate DRV
+    SCHED->RUNQ:进程移出运行队列
+
+    '硬件数据到达唤醒链路
+    IRQ-->DRV:硬件中断上报数据就绪
+    activate DRV
+    DRV->WAIT:wake_up_interruptible(wq)
+    WAIT->SCHED:进程改为TASK_RUNNING
+    WAIT->RUNQ:进程挂入运行队列
+    SCHED-->DRV:调度选中进程恢复执行
+    DRV-->SYSCALL:数据就绪，完成拷贝
+    SYSCALL-->App:返回读取长度
+    deactivate DRV
+  end
+end
+deactivate SYSCALL
+@enduml

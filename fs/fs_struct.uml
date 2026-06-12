@@ -1,0 +1,228 @@
+@startuml
+
+struct super_block {
+    ===== 1. 文件系统类型 =====
+    const char *s_type;         // ext4/xfs/fuse
+
+    ===== 2. 全局大小/布局 =====
+    unsigned long s_blocksize;  // 块大小 4K
+    unsigned long s_blocks_max; // 总块数
+    unsigned long s_free_blocks;// 空闲块数
+
+    ===== 3. inode 全局信息 =====
+    unsigned long s_inodes_max;
+    unsigned long s_free_inodes;
+
+    ===== 4. 挂载信息 =====
+    <color:blue>struct vfsmount *s_mount;
+    <color:blue>struct dentry *s_root  ' 根目录 / 的 dentry 
+
+    ===== 5. 操作函数表（最重要）=====
+    <color:blue>struct super_operations *s_op;
+        // alloc_inode, destroy_inode, read_inode, write_inode...
+
+    ===== 6. 真实文件系统私有信息 =====
+    void *s_fs_info; // ext4 私有信息、fuse 私有信息
+}
+
+struct inode {
+    ===== 1. 唯一标识 =====
+    unsigned long i_ino;        // inode 号（内核用这个找文件）
+
+    ===== 2. 文件基本属性 =====
+    umode_t i_mode;             // 文件类型 + 权限（目录/文件/链接）
+    uid_t i_uid;                // 所有者
+    gid_t i_gid;
+    loff_t i_size;              // 文件大小
+
+    ===== 3. 时间 =====
+    struct timespec i_atime;    // 访问时间
+    struct timespec i_mtime;    // 修改时间
+    struct timespec i_ctime;    // 属性改变时间
+
+    ===== 4. 数据位置（核心！） =====
+    <color:blue>sector_t i_blkaddr[];       // 数据在磁盘的块号（真正数据位置），可以使用多个块
+
+    ===== 5. 链接数 =====
+    unsigned int i_nlink;       // 硬链接数
+
+    ===== 6. 操作函数表 =====
+    <color:blue>struct inode_operations *i_op;
+    <color:blue>struct file_operations *i_fop;
+        // read, write, mmap, open, create...
+
+    ===== 7. 所属文件系统 =====
+    <color:blue>struct super_block *i_sb;
+
+    ===== 8. 私有数据（FUSE 在这里存自己的信息）=====
+    void *i_private;
+}
+
+struct dentry {
+    ===== 1. 名字 =====
+    <color:blue>const char *d_name;         // 文件名：test.txt
+
+    ===== 2. 对应的文件本体 =====
+    <color:blue>struct inode *d_inode;      // 指向 inode（核心！）
+
+    ===== 3. 目录树结构 =====
+    <color:blue>struct dentry *d_parent;    // 父目录
+    struct list_head d_subdirs; // 子目录/文件
+
+    ===== 4. 所属文件系统 =====
+    <color:blue>struct super_block *d_sb;
+
+    ===== 5. 缓存标志（加速用）=====
+    unsigned int d_flags;
+}
+
+struct file {
+    ===== 1. 进程看到的文件状态 ======
+    loff_t f_pos;               // 当前读写偏移量
+
+    ===== 2. 指向文件本体 ======
+    <color:blue>struct inode *f_inode;
+    <color:blue>struct dentry *f_dentry;
+
+    ===== 3. 操作函数表（最终调用这里！） =====
+    <color:blue>struct file_operations *f_op;
+
+    ===== 4. 打开标志 =====
+    unsigned int f_flags;       // O_RDONLY / O_WRONLY / O_SYNC
+
+    ===== 5. 所属进程 =====
+    struct cred *f_cred;
+
+    ===== 6. 私有数据（FUSE 在这里存句柄）=====
+    void *private_data;
+}
+
+struct super_operations {
+    ===== 1. Inode 生命周期全套（最常用，inode创建/销毁/落盘全在这）=====
+    struct inode *(*alloc_inode)(struct super_block *sb);           // 分配inode内存+私有扩展空间，新建文件/目录时触发（open O_CREAT/mkdir）
+    void (*destroy_inode)(struct inode *);                          // 销毁inode私有资源，对应alloc_inode反向释放
+    void (*dirty_inode) (struct inode *, int flags);                // inode被修改标记为脏页时调用，ext4/jfs写日志
+    int (*write_inode) (struct inode *, struct writeback_control *wbc); // 脏inode回写到磁盘（pdflush/回写线程、sync触发）
+    int (*drop_inode) (struct inode *);                             // inode引用计数归零，判断是否回收inode
+    void (*evict_inode) (struct inode *);                           // inode从内存驱逐、清理资源（最后一步回收）
+
+    ===== 2. super_block自身生命周期：挂载、卸载、超级块落盘 =====
+    void (*put_super) (struct super_block *sb); // umount卸载时释放超级块私有数据，卸载收尾
+
+    ===== 3. 全文件系统同步、冻结（快照/备份必备） =====
+    int (*sync_fs)(struct super_block *sb, int wait); // sync/umount同步整个文件系统脏数据落盘；wait=1阻塞等待写完
+    int (*freeze_fs) (struct super_block *); // 冻结文件系统：fsfreeze，阻止新写入，做快照/备份
+    int (*unfreeze_fs) (struct super_block *); // 解冻文件系统，恢复正常读写
+
+    ===== 4. 文件系统挂载相关 =====
+    int (*remount_fs) (struct super_block *, int *, char *data); // mount -o remount 重新挂载（ro/rw切换、修改挂载参数）
+    void (*umount_begin) (struct super_block *); // umount开始阶段，提前做卸载前置准备
+
+    ===== 5. 文件系统信息查询 =====
+    int (*statfs) (struct dentry *, struct kstatfs *); // statfs()/df命令：获取总块、空闲块、inode总数/剩余（df -h数据源）
+
+    ===== 6. /proc展示挂载信息（mount命令查看挂载参数） =====
+    int (*show_options)(struct seq_file *, struct dentry *);
+    int (*show_devname)(struct seq_file *, struct dentry *);
+    int (*show_path)(struct seq_file *, struct dentry *);
+    int (*show_stats)(struct seq_file *, struct dentry *);
+
+    ===== 7. 磁盘配额quota（用户/组磁盘限额） =====
+    ssize_t (*quota_read)(struct super_block *, int, char *, size_t, loff_t);
+    ssize_t (*quota_write)(struct super_block *, int, const char *, size_t, loff_t);
+
+    ===== 8. 内存回收：系统内存不足时释放文件系统缓存 =====
+    long (*nr_cached_objects)(struct super_block *, struct shrink_control *);
+    long (*free_cached_objects)(struct super_block *, struct shrink_control *);
+}
+
+struct file_operations {
+    =====  打开文件 =====
+    int (*open) (struct inode *, struct file *);                
+
+    ===== 读取文件内容 =====
+    ssize_t (*read) (struct file *, char __user *, size_t, loff_t *); 
+    
+    ===== 写入文件内容 =====
+    ssize_t (*write) (struct file *, const char __user *, size_t, loff_t *); 
+
+    ===== 偏移定位 lseek =====
+    loff_t (*llseek) (struct file *, loff_t, int);              
+
+    ===== 内存映射 mmap =====
+    int (*mmap)(struct file *, struct vm_area_struct *);        
+    
+    ===== 异步读写 aio =====
+    ssize_t (*read_iter)(struct kiocb *, struct iov_iter *);    
+    ssize_t (*write_iter)(struct kiocb *, struct iov_iter *);
+
+    ===== 切换读写位置 =====
+    int (*iterate)(struct file *, struct dir_context *);        
+
+    ===== 刷新缓冲区 fsync =====
+    int (*fsync) (struct file *, loff_t, loff_t, int datasync); 
+
+    ===== 关闭文件（释放） =====
+    int (*release)(struct inode *, struct file *);              
+
+    ===== 直接 I/O 开关 =====
+    ssize_t (*direct_IO)(struct kiocb *, struct iov_iter *);    
+
+    ===== 获取未读数据、poll/select 事件 =====
+    __poll_t (*poll) (struct file *, struct poll_table_struct *); 
+
+    ===== 自定义 ioctl =====
+    long (*unlocked_ioctl)(struct file *, unsigned int, unsigned long); 
+}
+
+struct inode_operations {
+    ===== 1. 查找文件名 → inode（最核心！open/ls 都走它）=====
+    struct dentry *(*lookup) (struct inode *, struct dentry *, unsigned int);   
+
+    int (*create) (struct inode *, struct dentry *, umode_t, bool);             
+    int (*mkdir) (struct inode *, struct dentry *, umode_t);                    
+    int (*unlink) (struct inode *, struct dentry *);                            
+    int (*rmdir) (struct inode *, struct dentry *);                             
+    int (*symlink) (struct inode *, struct dentry *, const char *);             
+    int (*link) (struct dentry *, struct inode *, struct dentry *);             
+    int (*rename) (struct inode *, struct dentry *, struct inode *, struct dentry *, unsigned int); 
+    int (*setattr) (struct dentry *, struct iattr *);                           
+    int (*getattr) (struct user_namespace *, struct vfsmount *, struct dentry *, struct kstat *); 
+
+    ===== 11. 分配块空间（fallocate）=====
+    int (*fallocate) (struct inode *, int, loff_t, loff_t);                     
+}
+
+inode_operations -right-o inode
+dentry -o super_block
+super_operations -up-o super_block
+inode -o dentry
+file_operations -left-o file
+inode --o file
+dentry --o file
+
+note right of super_block #LightGreen
+    超级块，管理整个文件系统
+end note
+
+note right of super_operations #LightGreen
+    整个文件系统相关的操作接口
+end note
+
+note top of dentry #LightGreen
+    目录项，根据文件名找inode
+end note
+
+note bottom of file_operations #LightGreen
+    所有操作接口
+end note
+
+note top of inode_operations #LightGreen
+    inode操作接口
+end note
+
+note bottom of file #LightGreen
+    进程打开的一个文件
+end note
+
+@enduml

@@ -1,0 +1,46 @@
+@startuml
+skinparam component {
+    BackgroundColor #f0f8ff
+    BorderColor #2E86AB
+    FontSize 12
+}
+
+package "common/" {
+    [dyn_param.c]
+    [libxdma.c]
+    [libxdma_api.h]
+    [xdma_thread.c]
+    [xdma_cdev.c]
+}
+
+[libxdma_api.h] --> [libxdma.c] : 接口的具体实现
+[xdma_cdev.c] --> [libxdma_api.h] : 调用公开API
+[xdma_thread.c] --> [libxdma_api.h] : 调用公开API
+[libxdma.c] --> [dyn_param.c] : 使用全局参数
+[xdma_cdev.c] --> [xdma_thread.c] : 使用线程
+[xdma_cdev.c] --> [dyn_param.c]
+[xdma_thread.c] --> [dyn_param.c]
+
+note top of libxdma_api.h
+对外公开API头文件
+上层只调用这里，不直接碰libxdma.c
+end note
+
+note top of libxdma.c
+API的底层实现
+SGDMA、寄存器、中断
+end note
+
+note top of xdma_cdev.c
+字符设备 /dev/xxx
+实现 file_operations
+end note
+
+note top of xdma_thread.c
+DMA工作线程、异步完成处理
+end note
+
+note top of dyn_param.c
+全局配置参数
+end note
+@enduml

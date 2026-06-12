@@ -1,0 +1,50 @@
+@startuml
+skinparam sequenceArrowThickness 2
+skinparam note {
+    BackgroundColor #F7FCFF
+    BorderColor #88BBDD
+    FontSize 12
+}
+
+note over App, VFS
+打开硬链接核心要点
+1.硬链接dentry直接指向原文件inode，无类型特殊标记
+2.i_nlink只是计数，打开流程和普通文件完全一致
+3.不会路径跳转，fd直接绑定原inode
+end note
+
+box "【用户态 User Space】" #LightYellow
+actor App
+end box
+
+box "【内核态 Kernel Space】" #LightCyan
+participant "VFS 虚拟文件系统" as VFS
+participant "硬链接dentry" as HardDentry
+participant "原文件inode" as RealInode
+participant "file结构体" as File
+end box
+database Disk
+
+App -> VFS: <color:red>①</color> open("/b/hardlink", O_RDONLY)
+activate VFS
+
+VFS -> HardDentry: <color:red>②</color> 路径查找拿到硬链接dentry
+activate HardDentry
+HardDentry --> VFS: <color:red>③</color> dentry绑定原文件ino，直接返回原inode
+note right: 硬链接无S_IFLNK标记，内核识别为普通文件
+deactivate HardDentry
+
+VFS -> RealInode: <color:red>④</color> 权限、文件属性校验
+activate RealInode
+RealInode --> VFS: 校验通过
+deactivate RealInode
+
+VFS -> File: <color:red>⑤</color> 分配struct file，绑定原inode
+activate File
+File --> VFS
+deactivate File
+
+VFS -> VFS: <color:red>⑥</color> 分配fd
+VFS --> App: <color:red>⑦</color> 返回fd，fd指向源文件inode
+deactivate VFS
+@enduml

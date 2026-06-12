@@ -1,0 +1,25 @@
+@startuml
+skinparam component {
+  BackgroundColor #f8f9fa
+  BorderColor #0066cc
+  FontSize 12
+}
+
+package "common/" {
+  [dyn_param.c]
+  [libxdma_api.h]
+  [libxdma.c]
+  [xdma_thread.c]
+  [xdma_cdev.c]
+}
+
+[libxdma_api.h] ..> [libxdma.c] : 实现关系（api 是声明，.c 是实现）
+
+[xdma_cdev.c] --> [libxdma_api.h] : 只调用公开 API
+[xdma_thread.c] --> [libxdma_api.h] : 只调用公开 API
+[libxdma.c] --> [dyn_param.c] : 使用全局 DMA 参数
+
+[xdma_cdev.c] --> [xdma_thread.c] : 使用线程服务
+[xdma_cdev.c] --> [dyn_param.c] : 可选使用参数
+[xdma_thread.c] --> [dyn_param.c] : 可选使用参数
+@enduml

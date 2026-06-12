@@ -1,0 +1,44 @@
+@startuml
+skinparam sequenceArrowThickness 2
+skinparam note {
+    BackgroundColor #F7FCFF
+    BorderColor #88BBDD
+    FontSize 12
+}
+
+note over App, VFS
+link硬链接创建核心规则
+1.不新建inode，只新增目录项dentry
+2.原文件inode链接计数i_nlink +=1
+3.新旧文件名共用同一个inode与磁盘数据
+end note
+
+box "【用户态 User Space】" #LightYellow
+actor App
+end box
+
+box "【内核态 Kernel Space】" #LightCyan
+participant "VFS 虚拟文件系统" as VFS
+participant "源文件dentry/inode" as Src
+participant "目标父目录dentry/inode" as DstDir
+end box
+database "Disk" as Disk
+
+App -> VFS: <color:red>①</color> link("/a/test.txt","/b/hardlink")
+activate VFS
+
+VFS -> Src: <color:red>②</color> 查找源文件dentry→获取inode
+Src --> VFS: 返回源inode信息
+VFS -> DstDir: <color:red>③</color> 查找目标父目录/b的inode
+DstDir --> VFS: 返回父目录inode
+
+VFS -> Src: <color:red>④</color> 源inode.i_nlink ++
+note right: 硬链接计数+1，rm只减计数，计数归零才回收inode
+
+VFS -> DstDir: <color:red>⑤</color> 在/b目录新增目录项：hardlink→原ino
+note right: 只新增dentry，不分配新inode
+
+VFS -> Disk: <color:red>⑥</color> 落地更新父目录、inode磁盘信息
+VFS --> App: <color:red>⑦</color> link创建成功，返回0
+deactivate VFS
+@enduml

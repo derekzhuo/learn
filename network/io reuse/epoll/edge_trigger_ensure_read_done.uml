@@ -1,0 +1,28 @@
+@startuml
+skinparam note {
+  BackgroundColor #f8fcff
+  BorderColor #aaa
+}
+box "内核缓冲区" #LightCyan
+participant KernelBuf
+end box
+box "用户程序" #LightYellow
+participant App
+end box
+
+== 【正确做法：ET + 循环读到 EAGAIN】 ==
+KernelBuf -> KernelBuf: 收到数据: ABCDEF
+App -> KernelBuf: read() → ABCD
+note left: 读到数据，继续循环
+App -> KernelBuf: read() → EF
+note left: 继续循环
+App -> KernelBuf: read() → -1 EAGAIN
+note left: <color:red>【正确】缓冲区空了，停止</color>
+
+== 【错误做法：ET + 只读一次】 ==
+KernelBuf -> KernelBuf: 收到数据: ABCDEF
+App -> KernelBuf: read() → ABCD
+note left: <color:red>【错误】剩下 EF 永远不会再触发</color>
+App -> App: 以为读完了，不再读
+KernelBuf -> KernelBuf: EF 永久滞留
+@enduml

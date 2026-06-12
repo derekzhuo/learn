@@ -1,0 +1,46 @@
+@startuml
+skinparam sequenceArrowThickness 2
+skinparam note {
+    BackgroundColor #F7FCFF
+    BorderColor #88BBDD
+    FontSize 12
+}
+
+note over App, VFS
+llseek 核心流程（file_operations）
+1. 用户态调用 lseek(fd, offset, whence)
+2. 内核通过 fd 找到 struct file
+3. 校验偏移是否合法（不超出文件大小）
+4. 直接修改 file->f_pos 文件偏移量
+5. 返回新的偏移值，无IO、不访问磁盘
+end note
+
+box "【用户态 User Space】" #LightYellow
+actor App
+end box
+
+box "【内核态 Kernel Space】" #LightCyan
+participant "VFS 虚拟文件系统" as VFS
+participant "file 结构体" as File
+participant "inode" as Inode
+end box
+
+App -> VFS: <color:red>①</color> lseek(fd, 1024, SEEK_SET)
+activate VFS
+
+VFS -> File: <color:red>②</color> 根据fd找到struct file
+activate File
+File --> VFS: 返回当前file对象（持有f_pos）
+
+VFS -> Inode: <color:red>③</color> 校验偏移合法性（对比inode->i_size）
+activate Inode
+Inode --> VFS: 偏移有效
+deactivate Inode
+
+VFS -> File: <color:red>④</color> 修改 file->f_pos = 新偏移
+note right: 只修改内存值，无磁盘操作
+deactivate File
+
+VFS --> App: <color:red>⑤</color> 返回新的文件偏移量
+deactivate VFS
+@enduml

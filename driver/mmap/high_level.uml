@@ -1,0 +1,67 @@
+@startuml
+skinparam component {
+  BackgroundColor #f5f8fa
+  BorderColor #235789
+  FontSize 11
+}
+skinparam linecolor #235789
+skinparam arrow Thickness 2
+
+package "用户态 App" {
+  [应用代码]
+  [虚拟地址空间 mmap 得到的 ptr]
+}
+
+package "CPU 核心" {
+  [MMU 内存管理单元 页表翻译]
+}
+
+package "内核层" {
+  package "页表管理" {
+    [页表项 虚拟地址 → 物理地址]
+  }
+  package "驱动层" {
+    [bridge_mmap 仅负责建立页表]
+    [ctrl_fops read/write 接口]
+  }
+  [内核缓冲区]
+}
+
+package "系统总线" {
+  [PCIe 总线]
+}
+
+package "FPGA 硬件" {
+  package "PCIe BAR 地址空间" {
+    [Control 寄存器区 control 设备]
+    [User 寄存器区 user 设备]
+  }
+}
+
+' ========== mmap 通路（直连，内核不参与数据传输） ==========
+[应用代码] --> [虚拟地址空间 mmap 得到的 ptr] : *ptr = data 写操作
+[虚拟地址空间 mmap 得到的 ptr] --> [MMU 内存管理单元 页表翻译] : 地址翻译请求
+[MMU 内存管理单元 页表翻译] --> [页表项 虚拟地址 → 物理地址] : 查询映射关系
+[页表项 虚拟地址 → 物理地址] --> [MMU 内存管理单元 页表翻译] : 返回 BAR 物理地址
+[MMU 内存管理单元 页表翻译] --> [PCIe 总线] : 直接发起 PCIe 写事务
+[PCIe 总线] --> [User 寄存器区 user 设备] : 数据直达硬件
+
+note right of [bridge_mmap 仅负责建立页表]
+mmap 阶段仅执行一次：
+1. 校验权限/地址范围
+2. 调用 remap_pfn_range 创建页表
+数据读写阶段：内核完全旁路
+end note
+
+' ========== 传统 read/write 通路（内核中转） ==========
+[应用代码] --> [内核层] : write() / read() 系统调用
+[内核层] --> [ctrl_fops read/write 接口] : 进入驱动读写函数
+[ctrl_fops read/write 接口] --> [内核缓冲区] : copy_from_user / copy_to_user 数据拷贝
+[内核缓冲区] --> [PCIe 总线] : iowrite32 / ioread32 操作
+[PCIe 总线] --> [User 寄存器区 user 设备] : 读写硬件
+
+note left of [内核缓冲区]
+两次数据拷贝 + 系统调用开销
+每一次读写都需要内核介入
+end note
+@enduml

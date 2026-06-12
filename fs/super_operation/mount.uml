@@ -1,0 +1,57 @@
+@startuml
+skinparam sequenceArrowThickness 2
+skinparam note {
+    BackgroundColor #F7FCFF
+    BorderColor #88BBDD
+    FontSize 12
+}
+
+note over App, VFS
+mount 挂载核心流程（super_operations）
+1. 解析设备、挂载点、文件系统类型
+2. 分配并初始化超级块 super_block
+3. 调用 s_op->read_inode 读取 root inode
+4. 创建挂载点 dentry 与根目录关联
+5. 建立文件系统层级挂载关系
+end note
+
+box "【用户态 User Space】" #LightYellow
+actor App
+end box
+
+box "【内核态 Kernel Space】" #LightCyan
+participant "VFS 虚拟文件系统" as VFS
+participant "super_block" as SB
+participant "root_inode" as RootInode
+participant "挂载点 dentry" as MountPoint
+end box
+
+database "磁盘/分区" as Disk
+
+' ========== 流程开始 ============
+App -> VFS: <color:red>①</color> mount("/dev/sdb1", "/mnt", "ext4")
+activate VFS
+
+VFS -> VFS: <color:red>②</color> 查找文件系统类型（ext4）
+VFS -> SB: <color:red>③</color> 分配 super_block 结构体
+activate SB
+
+VFS -> SB: <color:red>④</color> 调用 sb->s_op->fill_super()
+note right: 读取磁盘超级块、初始化 super_operations
+SB --> VFS: 超级块初始化完成
+
+VFS -> RootInode: <color:red>⑤</color> 读取根目录 inode(ino=1)
+activate RootInode
+RootInode --> VFS: 返回 root inode & root dentry
+deactivate RootInode
+
+VFS -> MountPoint: <color:red>⑥</color> 绑定挂载点 /mnt
+activate MountPoint
+MountPoint --> VFS: 挂载点 dentry 关联新文件系统
+deactivate MountPoint
+
+VFS -> VFS: <color:red>⑦</color> 加入全局挂载链表
+VFS --> App: <color:red>⑧</color> 挂载成功返回0
+deactivate SB
+deactivate VFS
+@enduml

@@ -1,0 +1,122 @@
+@startuml
+skinparam component {
+  BackgroundColor #f8f9fa
+  BorderColor #0066cc
+  FontSize 10
+}
+skinparam linecolor #0066cc
+
+' 第一层：用户态设备节点（区分4路C2H / 4路H2C）
+package "/dev/uvaps-0 设备节点" {
+  package "C2H 读通道(4路)" {
+    [c2h_0]
+    [c2h_1]
+    [c2h_2]
+    [c2h_3]
+  }
+  package "H2C 写通道(4路)" {
+    [h2c_0]
+    [h2c_1]
+    [h2c_2]
+    [h2c_3]
+  }
+  [control]
+  [events_0]
+  [events_1]
+  [user]
+  [xvc]
+}
+
+' 第二层：字符设备实现层
+package "根目录 cdev 接口层" {
+  [cdev_bypass]
+  [cdev_ctrl]
+  [cdev_events]
+  [cdev_xvc]
+}
+
+' 第三层：UVAPS 核心总线层
+package "UVAPS 总线核心" {
+  [uvaps_bus]
+  [uvaps_bus_common]
+  [uvp_bus_interface]
+}
+
+' 第四层：sbus4 版本化业务/协议层
+package "sbus4/ V4 业务逻辑" {
+  [uvp_bar_v4]
+  [uvp_c2c_conv_v4]
+  [uvp_ip0_v4]
+}
+
+' 第五层：PCIe 硬件抽象层
+package "PCIe 硬件管理层" {
+  [uvp_pcie]
+  [uvp_bar]
+}
+
+' 辅助工具层
+package "基础工具组件" {
+  [c_queue]
+  [c_stack]
+  [uvp_build_version]
+}
+
+' 第六层：common 通用DMA引擎（底层核心）
+package "common/ XDMA 内核引擎" {
+  [dyn_param]
+  [libxdma_api]
+  [libxdma]
+  [xdma_thread]
+  [xdma_cdev]
+}
+
+' ========== 调用链路 ==========
+' 1. 通道设备 统一关联到 cdev_bypass
+[c2h_0] --> [cdev_bypass]
+[c2h_1] --> [cdev_bypass]
+[c2h_2] --> [cdev_bypass]
+[c2h_3] --> [cdev_bypass]
+
+[h2c_0] --> [cdev_bypass]
+[h2c_1] --> [cdev_bypass]
+[h2c_2] --> [cdev_bypass]
+[h2c_3] --> [cdev_bypass]
+
+' 其余设备对应cdev实现
+[control] --> [cdev_ctrl]
+[user] --> [cdev_ctrl]
+[events_0] --> [cdev_events]
+[events_1] --> [cdev_events]
+[xvc] --> [cdev_xvc]
+
+' 2. 所有cdev 依赖核心总线
+[cdev_bypass] --> [uvaps_bus]
+[cdev_ctrl] --> [uvaps_bus]
+[cdev_events] --> [uvaps_bus]
+[cdev_xvc] --> [uvaps_bus]
+
+' 3. 总线 调用 sbus4 业务逻辑
+[uvaps_bus] --> [uvp_c2c_conv_v4]
+[uvaps_bus] --> [uvp_ip0_v4]
+[uvaps_bus] --> [uvp_bar_v4]
+
+' 4. 总线 调用 PCIe 管理层
+[uvaps_bus] --> [uvp_pcie]
+[uvaps_bus] --> [uvp_bar]
+
+' 5. 总线 依赖基础工具
+[uvaps_bus] --> [c_queue]
+[uvaps_bus] --> [c_stack]
+[uvaps_bus] --> [uvp_build_version]
+
+' 6. PCIe 层 对接底层DMA引擎
+[uvp_pcie] --> [xdma_cdev]
+[uvp_bar] --> [xdma_cdev]
+
+' 7. common 内部依赖关系
+[xdma_cdev] --> [libxdma_api]
+[xdma_thread] --> [libxdma_api]
+[libxdma_api] --> [libxdma]
+[libxdma] --> [dyn_param]
+@enduml

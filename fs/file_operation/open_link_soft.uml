@@ -1,0 +1,50 @@
+@startuml
+skinparam sequenceArrowThickness 2
+skinparam note {
+    BackgroundColor #F7FCFF
+    BorderColor #88BBDD
+    FontSize 12
+}
+
+note over App, VFS
+打开软链接关键：靠inode->i_mode == S_IFLNK识别软链接
+1.dentry找到inode，读取i_mode判定类型
+2.是S_IFLNK则读取inode数据区的目标路径
+3.VFS自动递归路径查找原文件inode
+end note
+
+box "【用户态 User Space】" #LightYellow
+actor App
+end box
+
+box "【内核态 Kernel Space】" #LightCyan
+participant "VFS 虚拟文件系统" as VFS
+participant "symlink_inode" as SymInode
+participant "real_inode" as RealInode
+participant "file结构体" as File
+end box
+
+App -> VFS: <color:red>①</color> open("/b/sym.txt",O_RDONLY)
+activate VFS
+
+VFS -> SymInode: <color:red>②</color> 路径解析拿到软链接inode
+activate SymInode
+SymInode -> SymInode: <color:red>③</color> 校验i_mode == S_IFLNK
+note right: <color:red>内核从此处识别是软链接，关键判断点</color>
+SymInode --> VFS: 取出inode内保存的路径:/a/real.txt
+deactivate SymInode
+
+VFS -> VFS: <color:red>④</color> 重新解析真实路径/a/real.txt
+VFS -> RealInode: <color:red>⑤</color> 获取原文件inode
+activate RealInode
+RealInode --> VFS: 普通文件inode(S_IFREG)
+deactivate RealInode
+
+VFS -> File: <color:red>⑥</color> 新建file绑定真实inode
+activate File
+File --> VFS
+deactivate File
+
+VFS --> App: <color:red>⑦</color> 返回fd，fd关联真实文件
+deactivate VFS
+@enduml

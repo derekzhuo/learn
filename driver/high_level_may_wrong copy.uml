@@ -1,0 +1,86 @@
+@startuml
+skinparam component {
+  BackgroundColor #f8f9fa
+  BorderColor #2E5EAA
+  FontSize 11
+}
+skinparam arrow Thickness 2
+
+package "用户态" {
+  [应用程序]
+}
+
+package "内核字符设备" {
+  package "数据面设备\n(标准DMA通道)" {
+    [/dev/h2c_0~3]
+    [/dev/c2h_0~3]
+  }
+  package "控制面设备\n(Bypass 通道)" {
+    [/dev/h2c_0~3_Bypass]
+    [/dev/c2h_0~3_Bypass]
+  }
+  [/dev/control / /dev/events]
+}
+
+package "内核驱动逻辑" {
+  package "DMA 链路" {
+    [cdev_bypass_DMA]
+    [uvaps_bus]
+    [common/xdma_cdev]
+    [libxdma_SGDMA引擎]
+  }
+  package "Bypass 链路\n(无DMA)" {
+    [cdev_bypass_MMIO]
+    [BAR地址管理]
+  }
+}
+
+package "FPGA 硬件" {
+  package "XDMA 硬核\n(SGDMA 数据通路)" {
+    [H2C DMA 通道组]
+    [C2H DMA 通道组]
+  }
+  package "PCIe BAR 地址空间\n(寄存器/控制通路)" {
+    [Bypass 寄存器组 0~3]
+  }
+}
+
+[应用程序] --> [/dev/h2c_0~3] : write 大块数据
+[应用程序] --> [/dev/c2h_0~3] : read 大块数据
+
+[/dev/h2c_0~3] --> [cdev_bypass_DMA]
+[cdev_bypass_DMA] --> [uvaps_bus]
+[uvaps_bus] --> [common/xdma_cdev]
+[common/xdma_cdev] --> [libxdma_SGDMA引擎]
+[libxdma_SGDMA引擎] --> [H2C DMA 通道组]
+
+[/dev/c2h_0~3] --> [cdev_bypass_DMA]
+[cdev_bypass_DMA] --> [uvaps_bus]
+[uvaps_bus] --> [common/xdma_cdev]
+[common/xdma_cdev] --> [libxdma_SGDMA引擎]
+[libxdma_SGDMA引擎] --> [C2H DMA 通道组]
+
+[应用程序] --> [/dev/h2c_0~3_Bypass] : write 控制字
+[应用程序] --> [/dev/c2h_0~3_Bypass] : read 状态字
+
+[/dev/h2c_0~3_Bypass] --> [cdev_bypass_MMIO]
+[/dev/c2h_0~3_Bypass] --> [cdev_bypass_MMIO]
+[cdev_bypass_MMIO] --> [BAR地址管理]
+[BAR地址管理] --> [Bypass 寄存器组 0~3]
+
+[应用程序] --> [/dev/control / /dev/events]
+[/dev/control / /dev/events] --> [BAR地址管理]
+[/dev/control / /dev/events] --> [libxdma_SGDMA引擎]
+
+note left of [Bypass 寄存器组 0~3]
+纯MMIO寄存器读写
+4字节粒度，CPU逐字操作
+绕开DMA引擎
+end note
+
+note right of [H2C DMA 通道组]
+SGDMA描述符传输
+整块数据搬运
+硬件自主搬运，不占用CPU
+end note
+@enduml

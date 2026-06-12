@@ -1,0 +1,59 @@
+@startuml
+skinparam sequenceArrowThickness 2
+skinparam note {
+    BackgroundColor #F7FCFF
+    BorderColor #88BBDD
+    FontSize 12
+}
+
+note over App
+核心真相：
+用户态的 select/poll/epoll，
+在内核里 **全部都调用同一个 f_op->poll()**
+select/poll/epoll 只是"调度策略"，不是驱动接口
+end note
+
+box "用户态" #LightYellow
+actor App
+end box
+
+box "内核系统调用层" #LightCyan
+participant "sys_select"
+participant "sys_poll"
+participant "sys_epoll"
+end box
+
+box "VFS 通用统一接口" #LightGreen
+participant "f_op->poll()" as POLL
+end box
+
+box "驱动层" #LightBlue
+participant "设备驱动"
+end box
+
+========== select ==========
+App -> sys_select: 调用 select()
+sys_select -> sys_select: 遍历所有 fd
+sys_select -> POLL: 逐个调用 poll()
+POLL -> 设备驱动: 驱动只实现 poll()
+设备驱动 --> POLL: 返回就绪状态
+POLL --> sys_select: 上报是否就绪
+sys_select --> App: 返回结果
+
+========== poll ==========
+App -> sys_poll: 调用 poll()
+sys_poll -> sys_poll: 遍历所有 fd
+sys_poll -> POLL: 逐个调用 poll()
+POLL -> 设备驱动: 驱动只实现 poll()
+设备驱动 --> POLL: 返回就绪状态
+POLL --> sys_poll: 上报是否就绪
+sys_poll --> App: 返回结果
+
+========== epoll ==========
+App -> sys_epoll: epoll_ctl / epoll_wait
+sys_epoll -> POLL: 调用一次 poll() 注册回调
+POLL -> 设备驱动: 驱动只实现 poll()
+设备驱动 --> POLL: 注册等待队列
+POLL --> sys_epoll: 完成回调注册
+sys_epoll --> App: 返回就绪事件
+@enduml

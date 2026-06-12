@@ -1,0 +1,60 @@
+@startuml
+skinparam sequence {
+    ArrowColor #2E5EAA
+    ActorBorderColor #0066cc
+    ParticipantBorderColor #0066cc
+    FontSize 12
+}
+
+actor 用户态应用
+participant "内核 VFS\n(open/mmap/read/write)" as Kernel
+participant "驱动: ctrl_fops" as Driver
+participant "bridge_mmap\n(映射BAR物理地址)" as BMMAP
+participant "PCIe BAR 空间\n(FPGA 寄存器)" as BAR
+
+' ==============================================
+' 左半部分：使用 mmap 的流程（你驱动里的 user/control）
+' ==============================================
+== 流程 1：使用 bridge_mmap（推荐，零拷贝）==
+用户态应用 -> Kernel: open("/dev/uvaps-0/user")
+Kernel -> Driver: 进入 char_open()
+Driver -> Driver: 根据 minor=0 标记为 USER 类型
+Driver -> Driver: 记录对应 BAR 基地址
+用户态应用 <-- Kernel: 返回 fd
+
+用户态应用 -> Kernel: mmap(NULL, len, fd, 0)
+Kernel -> BMMAP: 调用 bridge_mmap()
+BMMAP -> BMMAP: 检查 minor 号（USER / CTRL）
+BMMAP -> BMMAP: 选择对应 BAR 物理地址
+BMMAP -> Kernel: 建立页表：用户虚拟地址 ↔ BAR 物理地址
+用户态应用 <-- Kernel: 返回 虚拟地址 ptr
+
+== mmap 之后：直接读写 ==
+用户态应用 -> 用户态应用: *ptr = 0x1234;
+用户态应用 --> BAR: 直接写入 FPGA 寄存器（无系统调用、零拷贝）
+BAR --> 用户态应用: 数据直接返回
+
+' ==============================================
+' 右半部分：不使用 mmap，传统 read/write
+' ==============================================
+== 流程 2：不使用 mmap（传统 read/write）==
+用户态应用 -> Kernel: open("/dev/uvaps-0/user")
+Kernel -> Driver: char_open()
+用户态应用 <-- Kernel: 返回 fd
+
+用户态应用 -> Kernel: write(fd, buf, 4)
+Kernel -> Driver: 进入 char_ctrl_write()
+Driver -> Driver: copy_from_user（用户→内核）
+Driver -> BAR: iowrite32(数据, BAR)
+BAR --> Driver: 完成
+Driver --> Kernel: 返回成功
+Kernel --> 用户态应用: write 返回
+
+用户态应用 -> Kernel: read(fd, buf, 4)
+Kernel -> Driver: char_ctrl_read()
+Driver -> BAR: ioread32(BAR)
+BAR --> Driver: 数据返回内核
+Driver -> Driver: copy_to_user（内核→用户）
+Driver --> Kernel: 返回数据
+Kernel --> 用户态应用: 数据写入用户 buf
+@enduml

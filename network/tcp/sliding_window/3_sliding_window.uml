@@ -4,8 +4,8 @@ skinparam sequence {
   ActorBorderColor #22543d
   FontSize 11
 }
-actor 发送方
-actor 接收方
+participant 发送方
+participant 接收方
 
 == 滑动窗口：连续批量发送，流水线传输 ==
 发送方 -> 接收方 : 报文段1

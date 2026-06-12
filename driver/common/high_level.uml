@@ -1,0 +1,42 @@
+@startuml
+skinparam component {
+  BackgroundColor #f8f9fa
+  BorderColor #0066cc
+  FontSize 12
+}
+
+package "common/ (Xilinx 官方DMA内核)" {
+  [dyn_param]
+  [libxdma_api]
+  [libxdma]
+  [xdma_thread]
+  [xdma_cdev]
+}
+
+package "业务驱动 (外层)" {
+  [uvp_pcie]
+  [cdev_ctrl]
+  [cdev_events]
+  [cdev_bypass]
+  [uvaps_bus]
+}
+
+package "用户态设备" {
+  [/dev/uvaps-0!control]
+  [/dev/uvaps-0!c2h_0]
+  [/dev/uvaps-0!events_0]
+}
+
+[/dev/uvaps-0!control] --> [cdev_ctrl]
+[/dev/uvaps-0!c2h_0] --> [cdev_bypass]
+[/dev/uvaps-0!events_0] --> [cdev_events]
+
+[cdev_ctrl] --> [xdma_cdev]
+[cdev_bypass] --> [xdma_cdev]
+[cdev_events] --> [xdma_cdev]
+
+[xdma_cdev] --> [libxdma_api]
+[xdma_thread] --> [libxdma_api]
+[libxdma_api] --> [libxdma]
+[libxdma] --> [dyn_param]
+@enduml

@@ -1,0 +1,47 @@
+@startuml epoll_lt_et_compare
+skinparam sequenceArrowThickness 2
+skinparam note {
+    BackgroundColor #EFF8FF
+    BorderColor #6699CC
+}
+box "内核Socket缓冲区" #LightGreen
+participant Buf
+end box
+box "用户进程" #LightYellow
+participant Epoll
+participant App
+end box
+
+'============= 前置：缓冲区写入三段数据 ABC｜DEF｜GHI =============
+Buf -> Buf: 写入三段数据 ABC DEF GHI(缓冲区非空)
+
+'=====================【① 水平触发 LT 流程】=====================
+note over App,Buf #FFE6E6:<color:red>【LT：缓冲区有数据就持续触发】</color>
+App->Epoll: epoll_wait()阻塞等待事件
+Epoll->Buf: 查询fd就绪状态
+Buf-->Epoll: <color:red>①-LT：缓冲区有剩余数据 → 上报可读事件</color>
+Epoll-->App: 返回fd可读就绪
+App->Buf: read仅读出ABC(只读一部分，DEF+GHI残留缓冲区)
+note right of App: LT只读部分数据，剩余数据仍在buf
+
+App->Epoll: 再次调用epoll_wait()
+Epoll->Buf: 查询
+Buf-->Epoll: <color:red>②-LT：还有残留数据，继续重复上报</color>
+Epoll-->App: 再次返回可读事件
+App->Buf: 读完剩余DEF+GHI，缓冲区空
+Buf->Buf: 缓冲区清空，不再触发
+
+'=====================【② 边缘触发 ET 流程】=====================
+note over App,Buf #E6FFE6:<color:red>【ET：仅数据新增瞬间触发一次，存量数据不再通知】</color>
+Buf->Buf: 再次新写入XYZ(数据从无→有，触发边沿)
+App->Epoll: epoll_wait()
+Epoll->Buf: 状态查询
+Buf-->Epoll:<color:red>①-ET：数据新增边沿，只通知1次</color>
+Epoll-->App: 返回一次可读就绪
+App->Buf: 仅读出XYZ，缓冲区残留旧数据(空→有边沿已消失)
+
+App->Epoll: 再次epoll_wait()
+Epoll->Buf: 查询
+Buf-->Epoll:<color:red>②-ET：缓冲区剩数据但无新数据写入，不再触发事件</color>
+note right of Epoll: ET残留数据永久不触发，数据饿死
+@enduml

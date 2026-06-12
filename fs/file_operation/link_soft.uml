@@ -1,0 +1,46 @@
+@startuml
+skinparam sequenceArrowThickness 2
+skinparam note {
+    BackgroundColor #F7FCFF
+    BorderColor #88BBDD
+    FontSize 12
+}
+
+note over App, VFS
+symlink软链接创建要点
+1.新建独立inode+新dentry，不复用源文件inode
+2.inode内部存储目标路径字符串
+3.访问时自动路径跳转，可跨分区、可链接目录
+end note
+
+box "【用户态 User Space】" #LightYellow
+actor App
+end box
+
+box "【内核态 Kernel Space】" #LightCyan
+participant "VFS 虚拟文件系统" as VFS
+participant "源文件dentry/inode" as SrcFile
+participant "目标父目录inode" as TargetDir
+end box
+database "Disk" as Disk
+
+App -> VFS: <color:red>①</color> symlink("/a/real.txt","/b/sym.txt")
+activate VFS
+
+VFS -> SrcFile: <color:red>②</color> 校验源路径合法(不用持有源inode)
+SrcFile --> VFS: 路径有效
+
+VFS -> TargetDir: <color:red>③</color> 找到目标父目录/b的inode
+TargetDir --> VFS: 返回父目录inode
+
+VFS -> VFS: <color:red>④</color> 分配全新inode(软链接专属inode)
+note right: 软链接一定会生成新inode，区别硬链接
+
+VFS -> VFS: <color:red>⑤</color> 新inode数据区保存字符串"/a/real.txt"
+
+VFS -> TargetDir: <color:red>⑥</color> 在/b目录新增dentry：sym.txt → 新建ino
+
+VFS -> Disk: <color:red>⑦</color> 落盘：父目录项+软链接inode
+VFS --> App: <color:red>⑧</color> 创建成功返回0
+deactivate VFS
+@enduml
