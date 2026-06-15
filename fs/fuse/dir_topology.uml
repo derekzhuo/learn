@@ -1,0 +1,27 @@
+@startuml
+skinparam node {
+    Shape folder
+    BackgroundColor #f0f8ff
+}
+
+node "FUSE挂载点\n/mnt/log_mount" {
+    file test.log
+    file access.log
+    dir sub_log
+}
+
+node "tmpfs内存分区\n/mnt/log_tmpfs" {
+    file test.log
+    file access.log
+    dir sub_log
+}
+
+node "磁盘备份目录\n/var/log/disk_backup" {
+    file test.log(备份)
+    file access.log(备份)
+    dir sub_log(备份)
+}
+
+"FUSE挂载点\n/mnt/log_mount" -[dashed]-> "tmpfs内存分区\n/mnt/log_tmpfs" : 路径一一映射\n所有I/O转发
+"tmpfs内存分区\n/mnt/log_tmpfs" -[dashed]-> "磁盘备份目录\n/var/log/disk_backup" : 异步同步\n仅做数据备份
+@enduml

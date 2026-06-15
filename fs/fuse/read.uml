@@ -1,0 +1,32 @@
+@startuml
+skinparam sequence {
+    ArrowColor #0066cc
+    ActorBorderColor #0066cc
+}
+
+actor 业务应用
+participant ULogFS
+participant tmpfs(内核)
+participant 异步落盘线程
+participant 磁盘备份目录
+
+' 写流程
+== 日志写流程 ==
+业务应用 -> ULogFS : write /mnt/log_mount/test.log
+ULogFS -> ULogFS : 路径映射 /test.log → /mnt/log_tmpfs/test.log
+ULogFS -> tmpfs(内核) : 转发write请求
+tmpfs(内核) --> ULogFS : 内存写入完成
+ULogFS --> 业务应用 : 返回写入成功
+
+异步落盘线程 -> tmpfs(内核) : 定时轮询读取日志
+tmpfs(内核) --> 异步落盘线程 : 返回日志内容
+异步落盘线程 -> 磁盘备份目录 : 批量写入磁盘备份
+
+' 读流程
+== 日志读流程 ==
+业务应用 -> ULogFS : read /mnt/log_mount/test.log
+ULogFS -> ULogFS : 路径映射
+ULogFS -> tmpfs(内核) : 转发read请求
+tmpfs(内核) --> ULogFS : 返回内存数据
+ULogFS --> 业务应用 : 返回读取结果
+@enduml

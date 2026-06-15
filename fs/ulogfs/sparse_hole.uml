@@ -1,0 +1,117 @@
+@startuml UlogFS_写入过快_数据下沉_空洞路由版
+skinparam sequence {
+  ArrowColor #333
+  ActorBorderColor #666
+  DatabaseBorderColor #666
+  LineColor #999
+  GroupBorderColor #888
+}
+
+' 角色定义
+participant 业务App
+participant VFS
+participant 普通用户
+participant "UlogFS主线程" as UlogFS
+participant "SparseListen线程" as ListenThread
+participant "SparseWork线程" as SparseWork
+participant "Spill巡检线程" as SpillThread
+database "tmpfs(头4K+中间+尾部)" as TmpFS
+database "disk_cache(中间数据下沉层)" as DiskCache
+database "Portal(中间日志最终存储)" as Portal
+participant logtail
+
+' ========== 阶段1 业务写入 ==========
+group 阶段1 业务写入
+业务App -> VFS : 提交日志写入
+VFS -> UlogFS : 提交日志写入
+activate UlogFS
+UlogFS -> UlogFS : 检测tmpfs水位
+UlogFS -> TmpFS : 写入头4K+中间+尾部数据
+TmpFS --> UlogFS : 写入成功
+deactivate UlogFS
+end group
+
+' ========== 阶段2 普通用户读取 ==========
+group 阶段2 普通用户读取
+普通用户 -> UlogFS : 发起读请求
+activate UlogFS
+UlogFS -> TmpFS : 读取头部4K
+TmpFS --> UlogFS : 返回头部数据
+note over UlogFS: 中间区间直接拦截
+UlogFS -> TmpFS : 读取尾部数据
+TmpFS --> UlogFS : 返回尾部数据
+UlogFS --> 普通用户 : 仅返回头4K+尾部
+deactivate UlogFS
+end group
+
+' ========== 阶段3 高水位下沉数据 ==========
+group 阶段3 高水位触发: 数据下沉+制造空洞
+note over SpillThread: 检测水位超标，启动下沉逻辑
+activate SpillThread
+SpillThread -> UlogFS : 查询可迁移的中间区间
+UlogFS --> SpillThread : 返回中间区间
+
+SpillThread -> TmpFS : 读取中间段数据
+TmpFS --> SpillThread : 数据返回
+SpillThread -> DiskCache : 写入下沉数据
+DiskCache --> SpillThread : 落盘完成
+
+SpillThread -> TmpFS : punch_hole(4K对齐)
+note right of TmpFS: 中间生成空洞，头尾完好
+
+SpillThread -> UlogFS : 上报下沉偏移
+UlogFS -> UlogFS : 更新区间元数据
+deactivate SpillThread
+
+UlogFS -> 业务App : 下发写入限流
+业务App -> 业务App : 降低写入速率
+end group
+
+' ========== 阶段4 logtail 空洞读取 ==========
+group 阶段4 logtail空洞检测+跨存储读取
+logtail -> TmpFS : 增量读取数据
+TmpFS --> logtail : 返回全\\0(识别为空洞)
+
+logtail -> UlogFS : 空洞偏移请求数据
+activate UlogFS
+UlogFS -> DiskCache : 根据元数据读取对应数据
+DiskCache --> UlogFS : 返回下沉的中间数据
+UlogFS --> logtail : 回传完整数据
+deactivate UlogFS
+
+logtail -> Portal : 上报完整中间日志
+Portal --> logtail : 落库成功
+end group
+
+' ========== 阶段5 标记+最终清理 ==========
+group 阶段5 标记+最终磁盘清理
+logtail -> ListenThread : 上报中间区间已消费
+activate ListenThread
+ListenThread -> UlogFS : 中间区间标记 consumed=1
+note over ListenThread: 头尾不标记、不清理
+ListenThread -> SparseWork : 推送清理任务
+deactivate ListenThread
+
+note over SparseWork: 异步消费任务队列
+activate SparseWork
+SparseWork -> DiskCache : punch_hole 释放磁盘空间
+deactivate SparseWork
+end group
+
+' ========== 阶段6 极端高水位 ==========
+group 阶段6 危险水位: 写入阻塞，全力下沉清理
+业务App -> UlogFS : 写入请求
+activate UlogFS
+UlogFS -> UlogFS : 检测水位≥90%高危
+UlogFS --> 业务App : 写入阻塞，请重试
+deactivate UlogFS
+
+activate SpillThread
+SpillThread -> TmpFS : 批量下沉中间数据+打洞
+deactivate SpillThread
+
+普通用户 -> UlogFS : 正常读取头尾
+logtail -> TmpFS : 正常读+空洞路由补数
+end group
+
+@enduml

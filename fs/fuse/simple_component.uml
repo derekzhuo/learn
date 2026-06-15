@@ -1,0 +1,39 @@
+@startuml
+
+skinparam packageStyle rectangle
+skinparam arrowColor #222222
+skinparam lineColor #222222
+
+package 业务应用层 {
+    [业务进程]
+    [日志工具:tail/cat/echo]
+}
+
+package ULogFS-FUSE转发层 {
+    [路径转换模块]
+    [FUSE接口回调]
+    [异步落盘线程]
+    [异常处理]
+}
+
+package 内核tmpfs内存文件系统 {
+    [/mnt/log_tmpfs\n内存高速存储]
+    note right: 内核原生能力\ninode/目录/元数据/读写
+}
+
+package 磁盘持久化备份 {
+    [/var/log/disk_backup\n磁盘日志备份]
+}
+
+' 连线关系
+[业务进程] --> [FUSE接口回调] : I/O请求\n/mnt/log_mount/xxx
+[日志工具:tail/cat/echo] --> [FUSE接口回调]
+
+[FUSE接口回调] <--> [路径转换模块] : 虚拟路径→tmpfs路径
+[FUSE接口回调] <--> [/mnt/log_tmpfs\n内存高速存储] : 转发所有读写请求
+[FUSE接口回调] <--> [异常处理]
+
+[异步落盘线程] --> [/mnt/log_tmpfs\n内存高速存储] : 定时读取数据
+[异步落盘线程] --> [/var/log/disk_backup\n磁盘日志备份] : 批量异步落盘
+
+@enduml

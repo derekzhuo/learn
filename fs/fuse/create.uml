@@ -1,0 +1,60 @@
+@startuml
+skinparam sequenceArrowThickness 2
+skinparam note {
+    BackgroundColor #f8fcff
+    BorderColor #99aabb
+}
+
+' 分区：用户态、内核态
+box "【用户态】" #LightYellow
+actor App
+end box
+
+box "【内核态】" #LightCyan
+participant VFS
+participant "FUSE Kernel Module" as FUSE
+end box
+
+box "【用户态FS】"
+participant "MyFS\n(你的FUSE程序)" as MyFS
+end box
+
+' ① 用户应用发起open创建
+App -> VFS: <color:red>1</color> open("test.txt", O_CREAT)
+activate VFS
+
+' ② VFS下发请求至FUSE内核模块
+VFS -> FUSE: <color:red>2</color> 转发创建请求\n(path: test.txt, mode:0644)
+activate FUSE
+
+' ③ FUSE内核调用用户态create回调
+FUSE -> MyFS: <color:red>3</color> 调用 fuse_operations->create()
+activate MyFS
+
+' ④ 用户态：解析路径查父目录ino
+MyFS -> MyFS: <color:red>4</color> 路径解析，找到父目录ino
+note right: 自行维护目录树(等价dentry映射表)
+
+' ⑤ 分配全新inode
+MyFS -> MyFS: <color:red>5</color> 分配新inode\n(唯一ino、权限、文件类型)
+note right: 自建inode全局管理表
+
+' ⑥ 新增目录项（文件名→inode绑定）
+MyFS -> MyFS: <color:red>6</color> 写入目录项\n父目录 + test.txt → new_ino
+note right: 实现用户态dentry：文件名<->inode映射
+
+' ⑦ 初始化文件存储空间
+MyFS -> MyFS: <color:red>7</color> 初始化文件数据区\n(内存/磁盘/自定义存储)
+
+' ⑧ MyFS结果回写给FUSE内核
+MyFS --> FUSE: <color:red>8</color> 返回成功，携带新inode信息
+deactivate MyFS
+
+' ⑨ 内核VFS生成内核inode/dentry/file
+FUSE --> VFS: <color:red>9</color> 构建内核inode + dentry + file
+' ⑩ 返回fd到用户进程
+VFS --> App: <color:red>10</color> 返回文件描述符 fd
+
+deactivate FUSE
+deactivate VFS
+@enduml

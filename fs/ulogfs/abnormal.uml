@@ -1,0 +1,24 @@
+@startuml 采集滞后-下沉备份
+participant 业务App
+participant VFS
+participant UlogFS
+participant SpillThread
+Database TmpFS
+Database DiskCache
+participant logtail
+
+业务App -> VFS : write 写入日志
+VFS -> UlogFS : write 写入日志
+UlogFS -> TmpFS : write 写入日志
+note over TmpFS: consumed = 0 (未读)
+
+note over SpillThread: 水位超限
+activate SpillThread
+SpillThread -> TmpFS : 读取数据
+SpillThread -> DiskCache : 写入副本
+note over TmpFS: 未读块 → 不打洞！保留数据
+deactivate SpillThread
+
+logtail -> TmpFS : read 读取(正常读到数据)
+logtail -> UlogFS : 上报已读区间
+@enduml

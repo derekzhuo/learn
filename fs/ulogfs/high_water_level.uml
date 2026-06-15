@@ -1,0 +1,61 @@
+@startuml 全链路(Spill触发+Sparse积压)
+skinparam sequence {
+  ArrowColor #222
+  ActorBorderColor #444
+  DatabaseBorderColor #666
+  LineColor #888
+}
+
+Actor 业务App
+Actor logtail
+Actor UlogFS
+Actor SparseThread
+Actor SpillThread
+Database TmpFS
+Database DiskCache
+
+' ====================== 阶段1：业务持续写入 ======================
+业务App -> TmpFS : write 新增日志块
+TmpFS --> 业务App : 写入成功
+note over TmpFS: 块状态: consumed = 0
+
+' ====================== 阶段2：logtail 采集日志 ======================
+logtail -> TmpFS : read 增量读取(仅访问tmpfs)
+TmpFS --> logtail : 返回日志数据
+
+' ====================== 阶段3：logtail上报，打标记 + 投递Sparse任务 ======================
+logtail -> UlogFS : Socket上报 已读区间 [0, offset]
+activate UlogFS
+UlogFS -> UlogFS : 内存同步标记: consumed = 1
+UlogFS -> SparseThread : 投递Sparse清理任务(入队列)
+note over SparseThread: Sparse队列积压，暂时不执行
+deactivate UlogFS
+
+' ====================== 阶段4：tmpfs水位超限，触发Spill下沉线程 ======================
+note over SpillThread: 后台轮询检测:\ntmpfs 全局水位 > 高水位
+activate SpillThread
+
+' Spill筛选：只处理 consumed=1 的块
+SpillThread -> TmpFS : 读取已消费块数据
+TmpFS --> SpillThread : 返回块数据
+
+' 第一步：拷贝副本到二级磁盘缓存
+SpillThread -> DiskCache : write 写入完整副本
+DiskCache --> SpillThread : 落盘确认
+
+' 第二步：仅对 tmpfs 打洞释放内存 (DiskCache 保留数据)
+SpillThread -> TmpFS : punch_hole 打洞
+note over TmpFS,DiskCache: Spill 规则:\nTmpFS 释放内存\nDiskCache 保留副本(可回溯)
+deactivate SpillThread
+
+' ====================== 阶段5：延迟后，Sparse线程开始执行收尾清理 ======================
+note over SparseThread: 队列调度到任务，开始执行
+activate SparseThread
+
+' Sparse：两级缓存一起打洞，彻底销毁数据
+SparseThread -> TmpFS : punch_hole 打洞
+SparseThread -> DiskCache : punch_hole 打洞
+note over TmpFS,DiskCache: Sparse 规则:\n两级缓存全部清空\n数据永久删除，空间全回收
+
+deactivate SparseThread
+@enduml

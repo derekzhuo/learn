@@ -1,0 +1,41 @@
+@startuml 常规流程(Spill不触发)
+skinparam sequence {
+  ArrowColor #222
+  ActorBorderColor #444
+  DatabaseBorderColor #666
+}
+
+participant 业务App
+participant VFS
+participant UlogFS
+participant SparseThread
+Database TmpFS
+Database DiskCache
+participant logtail
+
+' 1. 业务写入日志到一级缓存
+业务App -> VFS : write 写入日志块
+VFS -> UlogFS: write 写入日志块
+UlogFS -> TmpFS : write 写入日志块
+TmpFS --> 业务App : 写入成功
+note over TmpFS: 块标记 consumed = 0
+
+' 2. logtail 增量读取(仅读 tmpfs)
+logtail -> TmpFS : read 拉取日志
+TmpFS --> logtail : 返回完整日志数据
+
+' 3. logtail 上报已读区间(触发标记+投递Sparse任务)
+logtail -> UlogFS : Socket上报: 已读 [0, offset]
+activate UlogFS
+UlogFS -> UlogFS : 同步标记块 consumed = 1
+UlogFS -> SparseThread : 投递异步清理任务
+deactivate UlogFS
+
+' 4. Sparse 线程执行: 两级缓存同步打洞(彻底回收)
+activate SparseThread
+SparseThread -> TmpFS : punch_hole 打洞
+SparseThread -> DiskCache : punch_hole 打洞
+note over TmpFS,DiskCache: 两层数据全部销毁\n空间彻底释放
+deactivate SparseThread
+
+@enduml
