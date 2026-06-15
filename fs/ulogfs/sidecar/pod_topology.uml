@@ -1,0 +1,93 @@
+@startuml Pod内部容器&卷&目录结构
+skinparam rectangle {
+  BackgroundColor #f5f8fa
+  BorderColor #34495e
+}
+skinparam node {
+  BackgroundColor #e8f4fd
+  BorderColor #2980b9
+}
+skinparam note {
+  BackgroundColor #fff3cd
+  FontSize 10
+}
+skinparam defaultFontName "Microsoft YaHei"
+
+' 外部角色与平台
+actor 业务用户 as User
+actor 外部运维 as OuterUser
+component Logtail配置平台 as ConfigPlat
+component 日志后端平台 as LogBackend
+
+' Pod 整体容器组
+rectangle "Pod 容器组（共享命名空间/卷/环境变量）" as PodGroup {
+
+' 共享 tmpfs 存储卷
+node "共享tmpfs卷\nemptyDir(Memory, 128Mi)" as TmpfsVol
+node "/pod-log-tmpfs/d01" as D01
+node "/pod-log-tmpfs/d02" as D02
+node "/pod-log-tmpfs/d03" as D03
+
+' 环境变量区块
+rectangle "Pod 全局环境变量" as EnvAll
+
+' 三大容器
+rectangle "业务容器 BizApp" as Biz
+node "/a/b/c (FUSE挂载点)" as BizDir1
+node "/m/n/o (FUSE挂载点)" as BizDir2
+
+rectangle "Ulogfs 容器 (FUSE服务)" as Ulogfs
+node "/pod-log-tmpfs" as UlogfsMount
+rectangle "FUSE核心逻辑" as FuseLogic
+
+rectangle "Logtail 容器 (日志采集)" as Logtail
+node "/pod-log-tmpfs" as LogMount
+rectangle "采集&路径转换逻辑" as CollectLogic
+
+}
+
+' ========== 所有注释 全部外置（解决note inside报错） ==========
+note bottom of TmpfsVol
+目录映射：
+d01 ↔ /a/b/c
+d02 ↔ /m/n/o
+d03 ↔ /x/y/z
+end note
+
+note top of EnvAll
+LOG_TMPFS_ROOT = /pod-log-tmpfs
+LOG_DIR_MAP = /a/b/c=d01;/m/n/o=d02;/x/y/z=d03
+end note
+
+note bottom of FuseLogic
+1. 写请求透传到底层tmpfs
+2. 普通读 → 截断前4KB
+3. 水位管控 + punch_hole
+end note
+
+note top of CollectLogic
+1. 解析环境变量构建映射
+2. 拉取配置平台目录
+3. 匹配真实目录
+4. inotify监听 + 全量读取
+5. 上报改写为业务路径
+end note
+
+' ========== 挂载关系（虚线） ==========
+BizDir1 -[dashed]-> D01 : subPath 挂载
+BizDir2 -[dashed]-> D02 : subPath 挂载
+
+UlogfsMount -[dashed]-> TmpfsVol : 整卷挂载
+LogMount -[dashed]-> TmpfsVol : 整卷挂载
+
+' FUSE 映射关系
+BizDir1 <--> FuseLogic : FUSE映射
+BizDir2 <--> FuseLogic : FUSE映射
+
+' ========== 外部交互连线 ==========
+User --> Biz : 业务进程写日志
+OuterUser --> Biz : 访问日志(4KB截断)
+Logtail --> ConfigPlat : 拉取用户配置目录
+Logtail --> LogBackend : 日志上报(业务路径)
+
+@enduml

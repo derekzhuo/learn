@@ -1,0 +1,126 @@
+@startuml 全链路详细时序图
+' 时序图样式配置
+skinparam sequence {
+  ArrowColor #2980b9
+  ActorBorderColor #2c3e50
+  LifeLineBorderColor #2c3e50
+}
+skinparam note {
+  BackgroundColor #fef9e7
+  FontSize 10
+}
+
+' 所有参与者定义
+actor 业务用户 as User
+participant "Logtail配置平台" as ConfigPlat
+participant "K8s APIServer" as K8sAPI
+participant "节点Kubelet" as Kubelet
+participant "共享tmpfs卷" as TmpfsVol
+participant "业务容器" as BizApp
+participant "Ulogfs容器" as Ulogfs
+participant "Logtail容器" as Logtail
+participant "日志后端平台" as LogBackend
+actor 外部运维用户 as OuterUser
+
+' ====================== 阶段1：用户配置 & 平台预处理 ======================
+User -> ConfigPlat: 填写采集业务目录\n[/a/b/c, /m/n/o]
+note right ConfigPlat
+1. 校验目录、去重
+2. 生成映射：/a/b/c→d01  /m/n/o→d02
+3. 拼接环境变量：
+LOG_DIR_MAP="/a/b/c=d01;/m/n/o=d02"
+end note
+
+ConfigPlat -> K8sAPI: 请求创建Sidecar Pod\n携带Pod模板、卷、环境变量
+
+' ====================== 阶段2：K8s 创建资源 & 初始化 ======================
+K8sAPI -> Kubelet: 下发Pod调度指令 & 资源规格
+note right Kubelet
+1. 创建128Mi emptyDir(tmpfs)
+2. 容器根路径：/pod-log-tmpfs
+3. 自动创建子目录 d01 d02
+4. 注入Pod全局环境变量
+end note
+
+Kubelet -> TmpfsVol: 创建共享tmpfs卷 + 子目录d01/d02
+Kubelet -> BizApp: 挂载卷(subPath) + 注入环境变量
+Kubelet -> Ulogfs: 整卷挂载 + 注入全局环境变量
+Kubelet -> Logtail: 整卷挂载 + 注入全局环境变量
+Kubelet --> Kubelet: 资源就绪，启动三大容器
+
+' ====================== 阶段3：Ulogfs 容器启动 & FUSE 初始化 ======================
+Ulogfs -> Ulogfs: 读取环境变量\nLOG_TMPFS_ROOT、LOG_DIR_MAP
+note right Ulogfs
+解析映射串，拼接真实目录：
+/pod-log-tmpfs/d01
+/pod-log-tmpfs/d02
+end note
+
+Ulogfs -> BizApp: 批量FUSE挂载
+note over Ulogfs,BizApp
+挂载规则：
+/pod-log-tmpfs/d01  ↔  /a/b/c
+/pod-log-tmpfs/d02  ↔  /m/n/o
+end note
+
+Ulogfs -> Ulogfs: 启动拦截逻辑\n普通读仅返回前4KB\n水位管控 + punch_hole
+
+' ====================== 阶段4：Logtail 容器启动 & 采集初始化 ======================
+Logtail -> Logtail: 读取环境变量\n构建内存映射表：业务目录→子目录
+Logtail -> ConfigPlat: 拉取用户配置业务目录列表
+ConfigPlat --> Logtail: 返回目录列表 [/a/b/c, /m/n/o]
+
+Logtail -> Logtail: 双向匹配，得到底层真实tmpfs路径
+note right Logtail
+/a/b/c → /pod-log-tmpfs/d01
+/m/n/o → /pod-log-tmpfs/d02
+end note
+
+Logtail -> Logtail: 扫描存量文件 + 初始化inotify监听
+
+' ====================== 阶段5：正常业务运行 & 日志流转 ======================
+' 5.1 业务写日志
+BizApp -> Ulogfs: 向FUSE目录 /a/b/c 写入日志
+Ulogfs -> TmpfsVol: 写请求透传\n数据落地 /pod-log-tmpfs/d01/xxx.log
+
+' 5.2 Logtail 采集上报
+TmpfsVol --> Logtail: inotify 触发文件变更事件
+Logtail -> TmpfsVol: 直读完整原始日志
+Logtail -> Logtail: 路径改写：真实路径 → 业务目录
+Logtail -> LogBackend: 上报日志(使用业务目录)
+LogBackend --> Logtail: 接收并持久化
+
+' 5.3 外部运维读取日志(4KB限制)
+OuterUser -> BizApp: 访问 /a/b/c/xxx.log
+BizApp -> Ulogfs: 发起读请求
+Ulogfs -> Ulogfs: 拦截请求，截断为前4KB
+Ulogfs --> OuterUser: 返回截断数据
+
+' 5.4 后台水位管控
+Ulogfs -> Ulogfs: 定时检测tmpfs内存水位
+note right Ulogfs
+高水位触发：数据下沉磁盘 + punch_hole 释放内存
+end note
+
+' ====================== 阶段6：运行中配置变更 ======================
+User -> ConfigPlat: 新增采集目录 /x/y/z
+note right ConfigPlat
+新增规则：/x/y/z=d03
+更新 LOG_DIR_MAP 映射串
+end note
+
+ConfigPlat -> K8sAPI: 触发Pod滚动更新
+K8sAPI -> Kubelet: 下发滚动更新指令
+Kubelet -> TmpfsVol: 新Pod创建d03 + 更新环境变量
+note over Kubelet,Logtail
+新容器自动解析映射、挂载、监听新目录
+旧Pod逐步下线，业务无感知
+end note
+
+' ====================== 阶段7：Pod 销毁 & 资源回收 ======================
+Kubelet -> BizApp: 停止业务容器
+Kubelet -> Ulogfs: 停止Ulogfs、卸载FUSE
+Kubelet -> Logtail: 停止Logtail采集
+Kubelet -> TmpfsVol: 卸载卷、删除目录、回收资源
+
+@enduml

@@ -29,6 +29,8 @@ UlogFS -> UlogFS : 检测tmpfs水位
 UlogFS -> TmpFS : 写入头4K+中间+尾部数据
 TmpFS --> UlogFS : 写入成功
 deactivate UlogFS
+UlogFS --> VFS: res
+VFS --> 业务App: res
 end group
 
 ' ========== 阶段2 普通用户读取 ==========
