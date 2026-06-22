@@ -1,0 +1,64 @@
+@startuml coemu before
+title coemue data flow before optimize
+participant hw
+queue "shared memory queue" as shm_q
+
+box daemon #lightBlue
+    participant "dma fifo thread" as dma_fifo_thread
+    participant "session thread" as sess_thread
+    participant "polling thread" as poll_thread
+end box
+
+queue "request shared_mem_q" as req_shm_q
+queue "response shared_mem_q" as res_shm_q
+
+box tb #LightGreen
+    participant "client socket read thread" as read_thread
+    queue "thread safe thread" as t_safe_thread
+    participant "test bench thread" as tb_thread
+    participant "polling thread" as tb_polling_thread
+end box
+
+==== before optimization ====
+hw -> shm_q: <<write>>
+shm_q -> dma_fifo_thread: <<read>>
+dma_fifo_thread -> sess_thread: <<push>>
+sess_thread -> read_thread: <<tcp read>>
+read_thread -> t_safe_thread: <<push>>
+t_safe_thread -> tb_thread: <<push>>
+
+tb_thread --> read_thread: <<ack>>
+read_thread --> sess_thread: <<ack>>
+sess_thread --> dma_fifo_thread: <<ack>>
+dma_fifo_thread --> hw: <<ack>>
+
+
+==== tcp after optimization ====
+hw -> shm_q: <<write>>
+dma_fifo_thread <- shm_q: <<read>>
+dma_fifo_thread -> read_thread: <<tcp send>>
+read_thread -> t_safe_thread: <<push>>
+t_safe_thread -> tb_thread: <<push>>
+tb_thread --> read_thread: <<tcp response>>
+read_thread --> shm_q: <<response>>
+hw <-- shm_q: <<response>>
+
+==== blocking shm_q after optimization ====
+hw -> shm_q: <<write>>
+poll_thread <- shm_q: <<read>>
+poll_thread -> req_shm_q: <<write>>
+tb_polling_thread <- req_shm_q: <<read>>
+
+tb_polling_thread --> res_shm_q: <<ack>>
+poll_thread <-- res_shm_q: <<ack>>
+poll_thread --> shm_q: <<ack>>
+hw <-- shm_q: <<ack>>
+
+
+==== non-blocking shm_q after optimization ====
+hw -> shm_q: <<write>>
+poll_thread <- shm_q: <<read>>
+poll_thread -> req_shm_q: <<write>>
+tb_polling_thread <- req_shm_q: <<read>>
+
+@enduml

@@ -1,0 +1,46 @@
+@startuml 业务Pod创建全流程时序
+actor "K8s自定义控制器" as Controller
+participant "APIServer" as APIServer
+participant "UlogfsManager\n(UlogFS DaemonSet主进程)" as UlogMgr
+participant "节点共享1G tmpfs存储池" as NodeTmpFS
+participant "独立FUSE子进程(LowLevel)" as FUSEProc
+participant "LogtailManager\n(Logtail DaemonSet)" as LogMgr
+participant "全局Logtail采集进程" as Logtail
+participant "业务Init容器" as InitPod
+participant "业务应用容器" as BizPod
+
+' 1. 控制器感知Pod创建，解析日志配置
+Controller->APIServer: 监听Pod创建事件，拉取Pod注解/环境变量
+APIServer-->Controller: 返回podUID、LOG_DIR_MAP、业务日志目录
+
+' 2. 向UlogfsManager发起挂载创建请求
+Controller->UlogMgr: TCP请求：创建挂载(podUID、映射规则、容量配额)
+UlogMgr->NodeTmpFS: 在全局tmpfs创建Pod专属子目录
+UlogMgr->UlogMgr: 宿主机创建FUSE挂载根路径
+UlogMgr->FUSEProc: 二次fork+setsid拉起独立LowLevel FUSE进程
+note over FUSEProc: 进程脱离Manager进程组\n具备4KB读拦截、logtail全量读取能力
+UlogMgr->UlogMgr: 挂载元数据持久化到宿主机hostPath
+
+' 3. Ulogfs同步挂载规则给Logtail
+UlogMgr->LogMgr: HTTP推送挂载元数据(挂载点、后端真实tmpfs路径、映射规则)
+LogMgr->LogMgr: 将规则存入全局路径映射表
+LogMgr->Logtail: 新增inotify监听对应tmpfs业务目录，存量日志扫描
+LogMgr-->UlogMgr: 采集规则注册完成
+
+' 4. 挂载就绪返回控制器
+UlogMgr-->Controller: 挂载创建成功，返回宿主机挂载路径
+
+' 5. Init容器阻塞等待挂载就绪
+InitPod->UlogMgr: 循环轮询挂载状态接口
+UlogMgr-->InitPod: 校验FUSE进程存活、挂载点正常，返回就绪
+InitPod->InitPod: 正常退出，允许业务容器启动
+
+' 6. 业务容器启动，通过hostPath挂载使用日志目录
+APIServer->BizPod: 启动业务容器(hostPath绑定宿主机FUSE挂载点)
+BizPod->FUSEProc: 业务日志写入，FUSE透传至节点共享tmpfs
+
+' 运行阶段：日志采集 + 内存空洞释放
+Logtail->NodeTmpFS: 监听日志新增，采集上报并做路径还原
+Logtail->UlogMgr: sparse空洞释放请求(携带文件绝对真实路径)
+UlogMgr->FUSEProc: 根据路径匹配归属FUSE进程，转发punch_hole指令
+@enduml
