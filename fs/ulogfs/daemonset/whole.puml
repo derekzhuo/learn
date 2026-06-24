@@ -1,0 +1,54 @@
+@startuml UlogFS热升级完整时序图
+actor OPS运维
+participant OldManager as "旧UlogfsManager"
+participant NewManager as "新UlogfsManager"
+participant MetaFile as "/var/ulogfs/mount.meta(挂载元数据)"
+participant Worker1 as "FUSE-Worker1(业务Pod1挂载)"
+participant Worker2 as "FUSE-Worker2(业务Pod2挂载)"
+participant LogtailMgr as "LogtailManager(HTTP服务)"
+participant APIServer as "K8s APIServer"
+
+note over OPS,APIServer: 前置：旧Manager已通过REUSEPORT监听18080，多个存量FUSE Worker正常运行
+
+OPS->OldManager: 发送SIGUSR1热升级信号
+activate OldManager
+OldManager->OldManager: 停止接受新TCP连接
+OldManager->MetaFile: flock加锁，全量写入当前所有挂载元数据
+OldManager->OldManager: 切换为【存量仅处理模式】\n只允许挂载销毁、稀疏请求，拒绝新建挂载
+deactivate OldManager
+
+OPS->NewManager: 启动新版本UlogfsManager进程\n(设置SO_REUSEPORT，绑定18080端口)
+activate NewManager
+NewManager->MetaFile: flock读锁加载全量挂载元数据
+NewManager->NewManager: 重建Worker管理内存映射表
+NewManager->NewManager: 校验每个Worker进程PID、Unix Socket连通性
+NewManager-->OPS: 上报升级就绪，进入灰度观察阶段
+
+note over APIServer,NewManager: 内核REUSEPORT分流：\n新TCP挂载连接→NewManager\n存量已建立长连接→OldManager
+
+APIServer->NewManager: 新建Pod：TCP下发挂载创建指令
+activate NewManager
+NewManager->NewManager: fork+exec 启动新FUSE-Worker3
+NewManager->LogtailMgr: HTTP上报挂载注册信息
+NewManager-->APIServer: 返回挂载创建成功
+deactivate NewManager
+
+APIServer->OldManager: 存量Pod销毁：TCP下发挂载销毁指令
+activate OldManager
+OldManager->LogtailMgr: HTTP查询该挂载日志是否采集完成
+LogtailMgr-->OldManager: 采集已完成
+OldManager->Worker1: 通过Unix Socket下发优雅关闭指令
+Worker1-->OldManager: 进程正常退出，挂载卸载
+OldManager->MetaFile: 更新元数据，删除已销毁挂载记录
+OldManager-->APIServer: 挂载销毁成功
+deactivate OldManager
+
+note over OPS,LogtailMgr: 观察周期结束，所有存量Pod已下线，所有旧Worker进程退出
+OPS->OldManager: 发送SIGTERM优雅终止信号
+activate OldManager
+OldManager->MetaFile: 释放文件锁、清理临时资源
+OldManager->OldManager: 关闭监听Socket、释放共享内存
+deactivate OldManager
+
+note over NewManager: 新版Manager完全接管全量挂载管控，热升级完成
+@enduml

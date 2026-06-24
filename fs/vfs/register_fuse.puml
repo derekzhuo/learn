@@ -1,0 +1,76 @@
+@startuml FUSE挂载VFS完整时序
+box 内核模块初始化阶段
+participant Kernel_Init as "fuse.ko模块加载"
+end box
+
+box 用户态LibFUSE进程
+participant LibFUSE as "libfuse(ulogfs进程)"
+end box
+
+box Linux VFS虚拟文件系统
+participant VFS as "VFS层"
+end box
+
+box FUSE内核驱动
+participant FUSE_KO as "fuse.ko驱动\n/dev/fuse字符设备"
+end box
+
+note over Kernel_Init,FUSE_KO
+阶段1：内核模块初始化，向VFS注册FUSE文件系统、注册/dev/fuse字符设备
+end note
+
+Kernel_Init->VFS: fuse_fs_register() 注册FUSE文件系统类型\n绑定super/inode/file三套VFS操作表
+Kernel_Init->FUSE_KO: misc_register() 注册/dev/fuse字符设备驱动
+
+note over LibFUSE,FUSE_KO
+阶段2：用户态打开/dev/fuse获取通信fd
+end note
+LibFUSE->FUSE_KO: open("/dev/fuse", O_RDWR)
+activate FUSE_KO
+FUSE_KO->FUSE_KO: 分配struct fuse_dev，预留通信绑定位置
+FUSE_KO-->LibFUSE: 返回通信fd=3
+deactivate FUSE_KO
+
+note over LibFUSE,VFS
+阶段3：用户态调用mount系统调用，发起VFS挂载
+end note
+LibFUSE->VFS: mount("fuse","/mnt/ulogfs", fd=3, rootmode, uid, gid)
+activate VFS
+VFS->FUSE_KO: 调用fuse_get_tree() 进入FUSE挂载逻辑
+deactivate VFS
+
+note over VFS,FUSE_KO
+阶段4：初始化超级块、fuse_mount、fuse_conn通信通道
+end note
+activate FUSE_KO
+FUSE_KO->VFS: 分配struct super_block
+FUSE_KO->FUSE_KO: 分配struct fuse_mount，sb->s_fs_info = fuse_mount
+FUSE_KO->FUSE_KO: 分配全局唯一struct fuse_conn通信对象\n初始化pending/processing/io三大请求队列
+FUSE_KO->FUSE_KO: 绑定/dev/fuse内核file与fuse_conn
+FUSE_KO->FUSE_KO: 创建根目录fuse_inode(nodeid=1)，挂载VFS根dentry
+deactivate FUSE_KO
+
+note over FUSE_KO,LibFUSE
+阶段5：FUSE_INIT协议握手，协商零拷贝等能力
+end note
+
+FUSE_KO->LibFUSE: /dev/fuse下发FUSE_INIT握手请求(协议版本、内核能力)
+
+activate LibFUSE
+LibFUSE->FUSE_KO: 返回握手应答(支持FUSE_CAP_SPLICE_READ、协议版本)
+deactivate LibFUSE
+
+activate FUSE_KO
+FUSE_KO->FUSE_KO: 更新fuse_conn协议、能力位，标记连接已就绪
+deactivate FUSE_KO
+
+note over VFS,LibFUSE
+阶段6：挂载完成，VFS接管挂载点，FUSE正式接入VFS
+end note
+VFS->VFS: 将根dentry绑定到/mnt/ulogfs挂载点
+LibFUSE->FUSE_KO: 循环阻塞read(/dev/fuse)，等待VFS下发文件系统请求
+
+note over VFS,FUSE_KO
+后续所有/mnt/ulogfs下的open/read/write系统调用\n都会经VFS路由到fuse.ko，封装请求下发用户态
+end note
+@enduml

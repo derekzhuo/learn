@@ -1,0 +1,119 @@
+@startuml VFS_FUSE_ARCH
+skinparam component {
+    BackgroundColor #f0f8ff
+    BorderColor #2c3e50
+}
+skinparam box {
+    BackgroundColor #fef9e7
+}
+
+' VFS Layer
+box
+component SuperBlock {
+struct super_block
+VFS super block
+sb->s_fs_info = fuse_mount
+}
+component DentryRoot {
+struct dentry
+Root dir entry
+Path cache
+}
+component VfsInode {
+struct inode
+VFS standard inode
+Perm/Size/Time
+}
+component VfsFile {
+struct file
+Process open context
+private_data = fuse_file_info
+}
+end box
+
+SuperBlock -down-> DentryRoot : s_root bind root dentry
+DentryRoot -down-> VfsInode : d_inode point to VFS inode
+
+' FUSE Kernel Layer
+box
+component FuseMount {
+struct fuse_mount
+VFS <-> FUSE bridge
+fc:conn, sb:super block
+}
+component FuseConn {
+struct fuse_conn
+Global unique channel
+Req queues / protocol caps
+Bind /dev/fuse
+}
+component FuseInode {
+struct fuse_inode
+Embed VFS inode
+nodeid:global file ID
+Attr cache timeout
+}
+component FuseReq {
+struct fuse_req
+Single syscall request
+unique seq / opcode
+}
+component FuseDev {
+struct fuse_dev
+/dev/fuse char dev
+Kernel <-> User channel
+}
+end box
+
+SuperBlock -right-> FuseMount : s_fs_info point to
+FuseMount -down-> FuseConn : fc hold mount connection
+VfsInode -right-> FuseInode : embed in fuse_inode.inode
+FuseInode -down-> FuseConn : belong to mount
+FuseConn -down-> FuseDev : bind char device
+FuseConn -down-> FuseReq : link to kernel req list
+VfsFile -right-> FuseReq : IO carry fuse_file_info
+
+' User Space Layer
+box
+component FuseSession {
+struct fuse_session
+User mount session
+Hold /dev/fuse fd
+}
+component FuseOps {
+struct fuse_operations
+Callback table
+open/read/write/lookup
+}
+component FuseFileInfo {
+struct fuse_file_info
+Open context
+fh:backend tmpfs fd
+}
+component UlogFSBackend {
+UlogFS Business
+File IO & Thread Manager
+}
+end box
+
+FuseDev <--> FuseSession : /dev/fuse req/resp pipe
+FuseSession -down-> FuseOps : register callback
+FuseReq <--> FuseFileInfo : pass open context
+FuseFileInfo -down-> UlogFSBackend : fi->fh store backend fd
+
+note top of FuseConn
+1. One mount corresponds to one fuse_conn
+2. Negotiate capabilities like SPLICE_READ
+end note
+
+note bottom of FuseInode
+nodeid is unique file identifier
+Only lookup uses file path
+Subsequent IO uses nodeid only
+end note
+
+note right of FuseFileInfo
+Kernel only forwards fh, never access its value
+Valid during the entire open lifecycle
+end note
+@enduml

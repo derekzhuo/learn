@@ -1,0 +1,101 @@
+@startuml FUSE对接VFS全流程时序
+box 应用层进程
+participant App as "业务进程\n(open/pwrite/close)"
+end box
+
+box Linux内核VFS层
+participant VFS as "VFS虚拟文件系统"
+end box
+
+box fuse.ko 内核驱动
+participant FUSE_KO as "fuse.ko驱动\n/dev/fuse设备"
+end box
+
+box 用户态libfuse框架
+participant LIBFUSE as "libfuse框架\nfuse_operations分发"
+end box
+
+box 你的UlogFS业务进程
+participant USER_FS as "UlogFS业务回调\n后端tmpfs读写"
+end box
+
+note over App,USER_FS
+前置：FUSE已挂载，根目录nodeid=1，/dev/fuse就绪
+end note
+
+' 1.路径查找LOOKUP
+App->VFS: open("/mnt/ulogfs/test.log") 触发路径解析
+VFS->FUSE_KO: 调用inode_ops->lookup
+activate FUSE_KO
+FUSE_KO->FUSE_KO: 封装FUSE_LOOKUP请求 unique=1 nodeid=1
+FUSE_KO->LIBFUSE: /dev/fuse下发二进制请求
+deactivate FUSE_KO
+
+activate LIBFUSE
+LIBFUSE->USER_FS: 触发lookup回调(父目录+文件名)
+activate USER_FS
+USER_FS-->LIBFUSE: 返回文件元数据(大小/权限)
+deactivate USER_FS
+
+LIBFUSE->FUSE_KO: 返回应答 unique=1
+deactivate LIBFUSE
+
+activate FUSE_KO
+FUSE_KO->VFS: 新建fuse_inode(nodeid=100),绑定dentry
+deactivate FUSE_KO
+
+' 2.文件OPEN，绑定fuse_file_info
+VFS->FUSE_KO: 调用file_ops->open
+activate FUSE_KO
+FUSE_KO->FUSE_KO: 创建内核struct_file，分配fuse_file_info
+FUSE_KO->FUSE_KO: 绑定 struct_file <--> fuse_file_info
+FUSE_KO->LIBFUSE: 下发FUSE_OPEN请求 unique=2 + fi
+deactivate FUSE_KO
+
+activate LIBFUSE
+LIBFUSE->USER_FS: 调用ulogfs_open(path, &fi)
+activate USER_FS
+USER_FS->USER_FS: open后端tmpfs文件，fi->fh=后端fd
+USER_FS-->LIBFUSE: return 0 打开成功
+deactivate USER_FS
+
+LIBFUSE->FUSE_KO: 返回成功应答 unique=2
+deactivate LIBFUSE
+FUSE_KO-->VFS: 返回进程fd，open调用完成
+
+'3. pwrite 写入，透传fi，不再使用path
+App->VFS: pwrite(fd, buf, 1024, 0)
+VFS->FUSE_KO: 通过进程fd找到struct_file，取出绑定的fuse_file_info
+activate FUSE_KO
+FUSE_KO->LIBFUSE: 下发FUSE_WRITE请求 unique=3 + 同一个fi
+deactivate FUSE_KO
+
+activate LIBFUSE
+LIBFUSE->USER_FS: 调用ulogfs_write(path(忽略), buf, size, offset, fi)
+activate USER_FS
+USER_FS->USER_FS: 从fi->fh取出后端fd，调用pwrite写入tmpfs
+USER_FS-->LIBFUSE: 返回写入字节数
+deactivate USER_FS
+
+LIBFUSE->FUSE_KO: 返回应答 unique=3
+deactivate LIBFUSE
+FUSE_KO-->VFS: 唤醒进程，pwrite完成
+
+'4. close释放上下文
+App->VFS: close(fd)
+VFS->FUSE_KO: 下发FUSE_RELEASE请求，携带绑定的fi
+activate FUSE_KO
+FUSE_KO->LIBFUSE: /dev/fuse下发RELEASE请求
+deactivate FUSE_KO
+
+activate LIBFUSE
+LIBFUSE->USER_FS: 调用release回调
+activate USER_FS
+USER_FS->USER_FS: close(fi->fh) 释放后端fd
+USER_FS-->LIBFUSE: return 0
+deactivate USER_FS
+
+LIBFUSE->FUSE_KO: 返回成功应答
+deactivate LIBFUSE
+FUSE_KO->FUSE_KO: 解绑struct_file与fuse_file_info，释放内存
+@enduml
