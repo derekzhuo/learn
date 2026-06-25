@@ -1,0 +1,44 @@
+@startuml ABA_Problem_Sequence
+actor OS as "操作系统调度器"
+participant P1 as "生产者P1"
+participant P2 as "生产者P2"
+participant C as "消费者C"
+participant Slot0 as "Slot0[flag]"
+
+note over P1,Slot0
+初始状态：head=0, tail=0
+Slot0.flag = false（空闲）
+end note
+
+== 阶段1：P1抢占索引0，读取flag后被OS挂起 ==
+P1->Slot0: i = head.fetch_add(1) → i=0, head=1
+P1->Slot0: 读取 slot_flag[0] = false（快照A）
+P1->OS: 发起系统调用，CPU调度触发线程切换
+OS->P1: 【P1被挂起，暂不执行写入、不修改flag】
+
+== 阶段2：P2、消费者C完成一轮完整生产+消费，Slot0被完整复用 ==
+P2->Slot0: 抢占i=1，slot_flag[1]=false
+P2->Slot0: 写入数据，slot_flag[1]=true
+C->Slot0: 读取tail=0，slot_flag[0]=false → 跳过
+C->Slot0: 消费slot1数据，slot_flag[1]=false，tail=1
+
+P2->Slot0: 抢占i=4(环形=0)，slot_flag[0]=false
+P2->Slot0: 写入业务数据，slot_flag[0]=true
+C->Slot0: 消费slot0数据，slot_flag[0]=false，tail=2
+note over P2,Slot0
+Slot0经历：false → true → false
+状态回到P1挂起前的快照A，发生ABA
+end note
+
+== 阶段3：P1被CPU唤醒，基于过期快照错误执行写入 ==
+OS->P1: 恢复P1运行
+P1->Slot0: 依据本地旧快照：slot_flag[0]==false，判定槽位空闲
+P1->Slot0: 直接覆盖写入Slot0数据
+note over P1,Slot0
+后果：
+1. P2刚刚写入未做其他备份的合法消息被直接覆盖，消息丢失
+2. 队列数据错乱、消费端读到脏数据
+这就是经典ABA漏洞
+end note
+
+@enduml

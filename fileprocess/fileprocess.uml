@@ -1,0 +1,72 @@
+@startuml
+
+participant uv_shell as us
+participant runtime_daemon as rd
+participant shmQueueThread as sqt
+queue h2fQueue as h2fq
+queue f2hQueue as f2hq
+participant FileProcess as fp
+
+== start process ==
+
+us --> rd: <<connect>>
+us --> rd: <<utilization>>
+rd --> rd++ #green: setUserAccount()
+    rd --> rd++: make_shared<UserAccount>
+        rd --> rd: <<create shm>>
+        rd --> rd: <<create shm>>
+        rd --> fp: <<fork with key of shm>>
+        rd --> rd: <<create h2fqueue>>
+        rd --> rd: <<create f2hqueue>>
+        rd --> sqt: <<invoke>>
+
+        fp --> fp: sleep 1s
+        fp --> fp: interface = make_shared<Interface>
+        fp <-- h2fq: load_h2fq
+        fp <-- f2hq: load_f2hq
+        fp --> fp: setgroups()
+        fp --> fp: setgid()
+        fp --> fp: setegid()
+        fp --> fp: setuid()
+
+
+== io req process ==
+        loop #lightblue handle file io req
+            rd --> rd++: HostIO::open
+            note right
+                返回值：logic fd，屏蔽真实的fd
+                问题：fileprocess返回fd，response如何找到调用者？
+                方案：所有的请求包与回包都会携带logic_fd
+            end note
+
+                rd <-- h2fq: interface->h2fquque.peek()
+                rd --> h2fq: interface->h2fquque.send()
+            return
+            rd --> rd: thread_meta_data->m_cv.wait_for(timeout)
+            fp <-- h2fq: interface->h2fq.try_pop(buf)
+            fp --> fp++: handle()
+                ...
+                fp --> f2hq: peek()
+                fp --> f2hq: send()
+            return
+            fp --> h2fq: ack()
+
+            sqt <-- f2hq: pop(buf)
+            sqt --> rd: notify()
+
+            rd --> rd: <<read buf>>
+
+            note right
+            1、关键数据结构thread_meta_data
+            2、标记每个io req，fileprocess回包时能找到正确的调用者
+            
+            end note
+
+        end loop
+
+    return
+return
+
+
+
+@enduml

@@ -1,0 +1,50 @@
+@startuml Simple_MPSC_ABA_Sequence
+
+participant 操作系统调度器 as OS
+participant 生产者线程P1 as P1
+participant 生产者线程P2 as P2
+participant "简易MPSC队列(head/tail原子+环形buffer)" as Queue
+participant 单消费者线程 as Consumer
+
+note over P1,Queue
+前置条件：
+队列容量 CAP=4，MASK=3
+初始状态：head=0，tail=0，队列为空
+本实现仅依靠全局head/tail，无per-slot状态，存在ABA漏洞
+end note
+
+== 阶段1：P1读取head快照后被线程调度挂起 ==
+P1->Queue: cur_head = head.load(relaxed) → 获取快照 cur_head = 0
+P1->P1: 校验 head - tail < 4，队列未满，可以入队
+P1->OS: 准备执行CAS(head, 0, 1)前，触发线程切换
+OS->P1: P1被挂起，head全局值仍为0，未发生修改
+
+== 阶段2：其他线程将队列完整循环一圈，head重新回到0 ==
+P2->Queue: CAS抢占head=0→1，写入buffer[0]
+P2->Queue: CAS抢占head=1→2，写入buffer[1]
+P2->Queue: CAS抢占head=2→3，写入buffer[2]
+P2->Queue: CAS抢占head=3→4，写入buffer[3]
+
+Consumer->Queue: 连续4次出队，tail从0→1→2→3→4
+
+P2->Queue: CAS抢占head=4→5，head数值5 & 3 = 0
+note over P2,Queue
+全局head数值再次变为0，和P1挂起前拿到的快照值完全一致
+发生ABA：head从0→4→0，旧快照失效但数值复用
+end note
+
+== 阶段3：P1被唤醒，基于过期快照执行错误CAS，覆盖数据 ==
+OS->P1: P1恢复CPU调度，继续执行CAS逻辑
+P1->Queue: CAS(head, 0, 1)
+note right of Queue
+当前全局head确实等于0，CAS执行成功
+P1拿到了本该属于新一轮的下标0写入权限
+end note
+P1->Queue: buffer[0 & 3] = 业务数据
+note over P1,Queue
+严重后果：
+新一轮刚刚写入buffer[0]的合法消息被直接覆盖，消息永久丢失
+队列数据错乱，这就是典型的无状态MPSC的ABA问题
+end note
+
+@enduml

@@ -1,0 +1,132 @@
+@startuml
+
+
+class ThreadMetaDataPool {
+    queue MPMCQueue<ThreadMetaData*>
+    thread_meta_data ThreadMetaData[]
+}
+note top: 重复使用已经分配的metadata内存，减少内存分配与释放
+
+class ThreadMetaData {
+    -ret int
+    -mutex mutex
+    -read_buf void*
+    -cv condition_variable
+    -buf char[]
+}
+note top: 封装了调用方信息，支持调用方在相应的cv上wait与wake
+
+class ThreadMetaSlowData {
+    queue MpscQueue
+    receive_buf uint8_t[]
+}
+
+class Interface {
+    h2fQueue ShmMpscQueue
+    f2hQueue ShmMpscQueue
+}
+note top: 持有基于共享内存的q，io请求、回包路径
+
+interface HostIO {
+    ThreadMetaDataPool
+    ThreadMetaData
+    ThreadMetaSlowData
+    Interface
+    idle_idle_fd2dir_queue MPMCQueue
+    idle_idle_fd_queue MPMCQueue
+
+    open()=0 virtual
+    read()=0 virtual
+    write()=0 virtual
+}
+
+note left
+runtime_daemon process
+1、logic fd的管理: idle_idle_fd_queue
+2、支持的io接口: open, read, write ...
+3、持有进程间通信的shm_q interface
+end note
+
+class ShmHostIO {
+    open() override
+    read() override
+    write() override
+}
+note right: 使用shm io，真实的io由FileProcess进程处理
+
+class SysHostIO {
+    open() override
+    read() override
+    write() override
+}
+note left: 直接使用system io api
+
+class HostIOFactory {
+    +{static} createHostIO()
+    +{static} createHostIOFromUserProject()
+}
+note top: io处理器的创建工厂
+
+class CommonArgument {
+    -fileOperation uint8_t
+    -logic_fd uint16_t
+    -count uint32_t
+    -ret uint64_t
+}
+note right: 其他参数也是如何封装
+
+class OpenArgument {
+    CommonArgument
+    mode int
+    filePath char[]
+}
+
+class ReadArgument {
+    CommonArgument
+    size int64_t
+    buf char[]
+}
+
+class WriteArgument {
+    CommonArgument
+    size int64_t
+    buf char[]
+}
+
+CommonArgument --o OpenArgument
+CommonArgument --o ReadArgument
+CommonArgument --o WriteArgument
+
+OpenArgument -- Interface
+ReadArgument -- Interface
+WriteArgument -- Interface
+
+
+Interface --o HostIO
+ThreadMetaData --o HostIO
+ThreadMetaSlowData --o HostIO
+ThreadMetaDataPool --o HostIO
+
+ShmHostIO -up-|> HostIO
+SysHostIO -up-|> HostIO
+
+HostIOFactory -right- HostIO
+
+
+class FdExclusiveSpace {
+    fd int
+    write_buf char*
+    fileio
+}
+
+entity FileProcess {
+    fd_mapping FdExclusiveSpace[]
+}
+note right: file io process
+
+FileProcess .up. Interface
+
+
+
+
+@enduml
