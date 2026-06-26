@@ -1,0 +1,96 @@
+@startuml Ulogfs_Detail_Smooth_Upgrade
+skinparam sequence {
+    Participant {
+        BackgroundColor #f0f8ff
+    }
+}
+
+actor BusinessApp
+participant "常驻守护Manager\n(调度/版本管理)" as Manager
+participant "旧版ulogfs(OldWorker)" as OldWorker
+participant "新版ulogfs(NewWorker)" as NewWorker
+participant FUSE_Kernel
+participant TmpFS
+participant LogTail
+
+== 阶段1：Manager感知升级，拉取、校验新版二进制文件 ==
+Manager -> Manager: 接收升级指令（配置/接口/本地信号）
+Manager -> Manager: 从指定仓库拉取最新 ulogfs 可执行二进制
+Manager -> Manager: 1.计算MD5校验文件完整性\n2.ldd校验依赖库\n3.授予可执行权限
+Manager -> Manager: 备份当前正在运行的旧版二进制，用于故障回滚
+
+== 阶段2：Manager拉起新版ulogfs，进入升级静默待命状态 ==
+Manager -> NewWorker: fork+exec 启动新版ulogfs\n入参：升级模式标记、IPC监听路径、原挂载配置参数
+NewWorker -> NewWorker: 初始化基础组件：日志、基础线程池、内存管理模块
+NewWorker -> NewWorker: 跳过 fuse_mount 挂载、跳过FUSE事件循环初始化
+NewWorker -> NewWorker: 绑定本地Unix域Socket（升级专属IPC端口）
+NewWorker -> Manager: 上报【UPGRADE_READY 待命就绪】
+note over OldWorker: 旧版ulogfs持续正常对外服务\n内核批量IO、用户态缓冲区聚合、tmpfs写入正常执行
+BusinessApp -> FUSE_Kernel: 持续调用write写入日志，业务无任何中断
+
+== 阶段3：Manager下发指令，通知新版发起新旧进程迁移握手 ==
+Manager -> NewWorker: 下发指令：【开始平滑升级，发起IPC状态迁移】
+NewWorker -> OldWorker: 连接旧进程预设Unix Socket，发送迁移握手请求
+OldWorker -> NewWorker: 返回握手确认，开始执行流量冻结前置操作
+
+== 阶段4：旧版ulogfs执行流量冻结、内存刷盘、异步任务排空（迁移前置准备） ==
+OldWorker -> OldWorker: 1.关闭新异步IO任务入队入口\n2.停止用户态缓冲区新数据追加
+OldWorker -> OldWorker: 遍历所有打开日志文件，强制触发缓冲区批量刷盘
+OldWorker -> TmpFS: 批量写入所有驻留用户态内存日志数据
+TmpFS --> OldWorker: 全部缓冲区数据持久化完成
+TmpFS -> LogTail: 批量IN_MODIFY事件，日志采集正常消费
+
+OldWorker -> OldWorker: 阻塞等待所有pending fuse_req异步请求处理完成
+OldWorker -> FUSE_Kernel: 逐个对未应答IO执行fuse_reply_write/fuse_reply_err
+note over FUSE_Kernel
+已接收未下发的新业务write请求，进入max_background内核队列排队
+业务进程write阻塞在内核层，不会返回失败
+end note
+
+BusinessApp -> FUSE_Kernel: 持续写入日志，请求在内核FUSE队列积压等待
+
+== 阶段5：新旧ulogfs点对点IPC：全量运行状态快照传输（核心数据交换过程） ==
+note over OldWorker,NewWorker: 全程Manager不参与任何业务数据转发
+OldWorker -> OldWorker: 序列化全局运行时快照：
+OldWorker -> OldWorker: 1.挂载参数：max_write/batch_write/kernel_cache/attr_timeout等FUSE配置
+OldWorker -> OldWorker: 2.打开文件全局表：inode、文件fd、当前读写offset、文件水位阈值
+OldWorker -> OldWorker: 3.线程池参数、事件fd、监控套接字路径、缓存策略配置
+OldWorker -> OldWorker: 4.当前全局内存水位、spill冷热迁移策略、日志临时路径
+
+OldWorker -> NewWorker: 通过Unix Socket发送序列化后的二进制状态快照
+NewWorker -> NewWorker: 接收并反序列化快照，校验数据合法性、版本兼容性
+
+== 阶段6：新旧ulogfs点对点移交FUSE挂载文件描述符（内核会话不中断关键） ==
+OldWorker -> OldWorker: 通过sendmsg+ancillary data封装/dev/fuse挂载FD
+OldWorker -> NewWorker: IPC发送挂载文件描述符
+note over NewWorker
+新版进程复制该FD，永久持有FUSE内核会话
+挂载点内核绑定关系保留，不会触发端点断开异常
+end note
+
+NewWorker -> NewWorker: 校验FD有效性、绑定到本地FUSE上下文
+
+== 阶段7：新版ulogfs恢复运行上下文、接管FUSE事件循环（流量切换过程） ==
+NewWorker -> NewWorker: 基于快照恢复：打开文件表、文件偏移、线程池、水位策略
+NewWorker -> NewWorker: 基于继承的/dev/fuse FD初始化FUSE事件循环、注册原有FUSE回调函数
+NewWorker -> FUSE_Kernel: 开始从挂载FD读取内核积压的批量FUSE IO请求
+
+FUSE_Kernel -> NewWorker: 依次下发内核max_background队列中排队的业务write请求
+NewWorker -> NewWorker: 复用用户态缓冲区聚合、FUSE异步IO逻辑处理IO
+NewWorker -> TmpFS: 批量写入日志数据
+TmpFS -> LogTail: 持续触发文件修改事件，日志采集无中断
+
+NewWorker -> Manager: 上报【流量接管完成，升级就绪】
+
+== 阶段8：旧版ulogfs优雅释放资源、进程退出 ==
+Manager -> OldWorker: 下发优雅退出指令
+OldWorker -> OldWorker: 释放本地线程、临时套接字、非全局文件句柄
+note over OldWorker: 不关闭从内核继承的/dev/fuse挂载FD（已由新版持有）
+OldWorker -> OldWorker: 进程正常exit退出
+
+== 阶段9：升级完成，业务全链路稳定运行 ==
+note over BusinessApp
+open/write/lseek/fsync/fstat全部正常执行
+FUSE内核PageCache保留，数据视图一致，无IO报错、无数据丢失
+end note
+@enduml

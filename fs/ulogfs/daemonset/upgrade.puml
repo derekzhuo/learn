@@ -1,0 +1,70 @@
+@startuml Ulogfs_Final_Smooth_Upgrade
+skinparam sequence {
+    Participant {
+        BackgroundColor #f0f8ff
+    }
+}
+
+actor BusinessApp
+participant "常驻守护Manager\n(版本管理/拉起调度)" as Manager
+participant "旧版ulogfs(OldWorker)" as OldWorker
+participant "新版ulogfs(NewWorker)" as NewWorker
+participant FUSE_Kernel
+participant TmpFS
+participant LogTail
+
+== 阶段1：Manager感知升级，准备新二进制 ==
+Manager -> Manager: 检测到升级任务
+Manager -> Manager: 拉取/落地新版ulogfs二进制 + 完整性校验
+
+== 阶段2：Manager拉起新版进程(静默待命) ==
+Manager -> NewWorker: 启动新版ulogfs
+NewWorker -> NewWorker: 初始化完成，进入升级待命状态
+note over NewWorker: 不挂载、不抢占、不处理IO
+note over OldWorker: 旧版本持续正常对外服务
+
+== 阶段3：Manager通知新版：发起升级迁移 ==
+Manager -> NewWorker: 下发【开始平滑升级】指令
+NewWorker -> OldWorker: IPC握手：请求状态&amp;FD迁移
+
+== 阶段4：旧版冻结流量、刷净内存、排空任务 ==
+OldWorker -> OldWorker: 冻结新业务任务入队
+OldWorker -> OldWorker: 用户态聚合缓冲区全部刷入TmpFS
+OldWorker -> OldWorker: 等待所有异步IO/pending fuse_req应答完成
+
+note over FUSE_Kernel
+新业务流量在内核max_background队列排队
+业务write不失败、不中断
+end note
+
+BusinessApp -> FUSE_Kernel: 持续正常write日志
+
+== 阶段5：新旧Worker点对点数据/FD迁移 ==
+note over OldWorker,NewWorker: 全程Manager不参与数据交换
+OldWorker -> NewWorker: 传输全部运行状态快照\n(文件表/offset/inode/配置)
+OldWorker -> NewWorker: sendmsg移交 /dev/fuse 挂载FD
+
+note over NewWorker
+新版完整继承FUSE内核会话
+挂载点全程保留不失效
+end note
+
+== 阶段6：新版接管流量，恢复服务 ==
+NewWorker -> NewWorker: 恢复上下文、启动FUSE事件循环
+NewWorker -> FUSE_Kernel: 接管内核排队IO请求
+FUSE_Kernel -> NewWorker: 下发批量积压FUSE请求
+NewWorker -> TmpFS: 正常批量写入日志
+
+TmpFS -> LogTail: inotify事件持续触发，采集无中断
+
+== 阶段7：旧版优雅退出，升级完成 ==
+NewWorker -> Manager: 上报接管成功
+Manager -> OldWorker: 优雅退出指令
+OldWorker -> OldWorker: 释放资源，进程退出
+
+== 最终效果：业务全程无感知 ==
+note over BusinessApp
+open/write/lseek/fsync 零报错
+mount点不卸载、数据链路零中断
+end note
+@enduml

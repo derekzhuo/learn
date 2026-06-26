@@ -1,0 +1,52 @@
+@startuml Freeze_Traffic_Detail
+participant OldWorker
+participant "全局原子冻结标记" as FreezeFlag
+participant "FUSE write回调" as FuseWrite
+participant "异步线程池" as ThreadPool
+participant "单文件用户缓冲区" as UserBuf
+participant TmpFS
+
+OldWorker -> FreezeFlag: 原子设置 g_upgrade_freeze = true
+
+== 1. 源头拦截：新FUSE write请求（正确内核排队方案，不返回错误） ==
+FuseWrite -> FreezeFlag: 每次进入回调先判断冻结标记
+alt 已冻结
+    note over FuseWrite
+    不深拷贝数据、不封装异步任务、不调用任何fuse_reply_*应答接口
+    直接return退出回调，请求挂入内核max_background队列阻塞排队
+    业务进程write在内核挂起，不会返回错误，等待新版接管后内核重新下发
+    end note
+    FuseWrite -> FuseWrite: 直接return
+else 未冻结
+    FuseWrite -> ThreadPool: 正常封装异步任务，投递线程池
+end alt
+
+== 2. 拦截用户态缓冲区新数据写入 ==
+UserBuf -> FreezeFlag: buffer_append函数执行前校验全局冻结标记
+alt 已冻结
+    UserBuf -> UserBuf: 拒绝向缓冲区追加新业务数据
+end alt
+
+== 3. 阻塞等待所有存量异步任务全部执行完毕 ==
+OldWorker -> ThreadPool: 调用thread_pool_wait_all()阻塞等待
+ThreadPool -> ThreadPool: 等待全局任务计数器归0，所有存量fuse_req全部完成内核应答
+
+== 4. 遍历所有打开文件，强制批量刷净用户态内存缓冲区 ==
+OldWorker -> UserBuf: 遍历全局inode文件哈希表，每个文件加互斥锁
+UserBuf -> TmpFS: pwrite批量写入缓冲区残留日志数据
+TmpFS --> UserBuf: 批量写入完成，清空当前文件缓冲区used计数
+
+== 5. 冻结前置完整性校验 ==
+OldWorker -> OldWorker: 执行三项校验
+note over OldWorker
+1. 异步线程池任务队列为空
+2. 所有文件用户缓冲区used=0，无内存脏数据
+3. 无已接收但未应答的pending fuse_req请求
+end note
+
+note over OldWorker
+冻结前置准备完成，用户侧无遗留业务数据
+新业务IO全部在内核max_background队列排队
+进入新旧进程状态、挂载FD迁移阶段
+end note
+@enduml
