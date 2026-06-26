@@ -1,0 +1,31 @@
+@startuml MPSC_Slot_Turn_状态转移时序推演
+actor 生产者
+participant "固定槽位 slot[i]" as Slot
+actor 消费者
+
+note over Slot
+初始状态：slot[i].turn = i
+状态：空闲可写
+规则：
+turn = i      → 空闲可写
+turn = i + 1  → 数据就绪可消费
+turn = i + 2  → 已消费待释放
+end note
+
+== 1. 空闲可写 → 数据就绪可消费（生产者写入） ==
+生产者 -> Slot: peek自旋等待 turn == i
+生产者 -> Slot: 写入业务数据
+生产者 -> Slot: send()，执行 turn.store(i+1, release)
+note over Slot: turn = i+1，切换为【数据就绪可消费】
+
+== 2. 数据就绪可消费 → 已消费待释放（消费者读取确认） ==
+消费者 -> Slot: try_pop 校验 turn == i+1，读取数据
+消费者 -> Slot: ack()，执行 turn.store(i+2, release)
+note over Slot: turn = i+2，切换为【已消费待释放】
+
+== 3. 已消费待释放 → 空闲可写（环形复用） ==
+note over Slot: 当前turn=i+2，禁止读写
+生产者 -> Slot: 队列全局head不断轮转，再次分配到下标i
+生产者 -> Slot: 自旋等待直到 turn 递增至 ≡ i (mod N)
+note over Slot: turn回到逻辑值i，重新切换为【空闲可写】
+@enduml

@@ -6,46 +6,58 @@ box mpsc #LightBlue
     participant "Slot0(turn_序列号)" as Slot0
     participant "队列元数据(head/tail)" as Meta
 end box
-participant  单消费者线程 as Consumer
+participant 单消费者线程 as Consumer
 
 note over P1,Meta
 前置规则：
 1. 队列容量 N=4，slot_size_bit=2，掩码=3
-2. 槽位i状态规则：
-   空闲可写：turn = i
-   数据就绪：turn = i + N
-   消费释放：turn = i + 2*N
+2. 槽位i状态规则(相对轮次)：
+   空闲可写：turn % N == i
+   数据就绪：turn % N == i+1
+   消费释放：turn % N == i+2
 3. 初始：head=0, tail=0，Slot0.turn=0
 end note
 
 == 阶段1：P1抢占索引i=0，读取turn快照后被操作系统挂起 ==
 P1->Meta: i = head.fetch_add(acquire) → i=0，head=1
+activate P1
 P1->Slot0: 读取 Slot0.turn = 0 【本地过期快照】
-P1->P1: 准备自旋等待 turn == 0 后写入数据
-P1->OS: CAS写入前发生线程切换，P1被挂起
+P1->P1: 准备自旋等待 turn%4 == 0 后写入数据
+P1-[#red]->OS: <b><font color=red>CAS写入前发生线程切换，P1被挂起
+deactivate P1
+note over P1
+未调用send
+end note
 
 == 阶段2：P2+消费者完成一轮完整生产+消费，Slot0被环形复用 ==
-P2->Meta: 依次抢占i=1、2、3完成入队
-P2->Slot0: 等待turn==1，写入数据，turn=1+4=5
-Consumer->Slot0: 消费成功，ack后 turn=1+8=9
+P2->Meta: 依次抢占i=1、2、3完成入队消费
+activate P2
+P2->Meta: 全局head递增到4，环形取模等价索引i=0
+P2->Slot0: 自旋等待 turn%4 == 0
+P2->Slot0: 写入业务数据，send()更新 turn = 1
+note over Slot0: turn=1，1%4=1 → 数据就绪可消费
+Consumer->Slot0: try_pop校验 turn%4 == 1，读取消息
+Consumer->Slot0: ack()更新 turn = 2
+note over Slot0: turn=2，2%4=2 → 已消费待释放
 
-P2->Meta: 抢占i=4(环形等价索引0)
-P2->Slot0: 自旋等待 turn == 0，此时Slot0.turn还是0
-P2->Slot0: 写入业务数据，执行 turn.store(0+4=4, release)
-Consumer->Slot0: 校验 turn==4，读取消息；ack释放槽位
-Consumer->Slot0: turn.store(0+8=8, release)
+P2->Meta: 后续head继续递增，再次分配到等价i=0
+P2->Slot0: 自旋等待直到 turn 递增为4（4%4=0）
+P2->Slot0: 写入新消息，send()更新 turn = 5
+note over Slot0: turn=5，5%4=1，再次进入数据就绪状态
 note over Slot0
-一轮完整生命周期结束，Slot0.turn = 8
-不再等于P1保存的旧快照值 0，ABA条件被破坏
+此时下标i=0、turn%4=1和上一轮一致
+但全局真实turn=5 ≠ P1旧快照turn=0，形成ABA表象
 end note
 
 == 阶段3：P1被CPU唤醒，校验turn发现快照过期，拒绝错误写入 ==
 OS->P1: P1恢复运行，继续执行自旋判断
-P1->Slot0: 重新加载最新 turn = 8
-P1->P1: 判断 8 != 本地快照 0，不满足空闲写入条件
-P1->P1: 进入自旋循环，短暂sleep后重复读取turn
+activate P1
+P1->Slot0: 重新加载最新 turn = 5
+P1->P1: 判断 5 % 4 = 1 ≠ 本地快照预期0
+P1->P1: 不满足空闲写入条件，持续自旋等待
 note over P1
-P1不会执行写入操作，永远不会覆盖Slot0中已存在的合法数据
-每轮槽位复用，turn固定 +2*N，序列号永远不会复用上一轮数值，彻底规避ABA
+P1不会执行写入覆盖现有消息
+全局turn单调递增，每一轮复用槽位都会产生全新轮次号
+依靠turn序列号隔离历史上下文，彻底规避ABA问题
 end note
 @enduml

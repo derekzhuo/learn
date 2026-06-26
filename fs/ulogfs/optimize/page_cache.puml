@@ -1,0 +1,57 @@
+@startuml KernelCache_VS_DirectIO_Return_Timeline
+skinparam sequence {
+    Participant BackgroundColor #f0f8ff
+    Actor BackgroundColor #ffe4e1
+}
+
+actor BusinessApp
+participant FUSE_Kernel
+participant "FUSE Page Cache\n(内核页缓存)" as FUSE_PageCache
+participant Ulogfs
+participant "TmpFS Page Cache\n(底层内存页缓存)" as TmpFS_PageCache
+
+== 模式1：kernel_cache 开启FUSE内核页缓存，write立刻返回 ==
+note over BusinessApp, Ulogfs
+多次小write写入FUSE内核页缓存就返回，不等待ulogfs落地
+const char *fuse_argv[] = {
+    "ulogfs",
+    "-o", "max_write=131072",    // 单次FUSE最大写请求限制128KB，内核聚合连续小write
+    "-o", "max_pages=32",        // 单次IO最多允许32个内存页参与批量合并
+    "-o", "batch_write",         // 开启内核批量写，多个相邻小IO打包为单次请求下发用户态
+    "-o", "max_background=64",    // 内核最大后台排队异步IO数量，突发流量内核削峰
+    "-o", "entry_timeout=60",    // 目录项（文件名、inode映射）内核缓存60秒
+    "-o", "attr_timeout=60",     // 文件属性（大小、权限、时间戳）内核缓存60秒
+    "-o", "kernel_cache"         // 开启FUSE内核页缓存，重复文件读直接内核返回，不进入用户态
+    // 纯日志只写场景追加："-o", "direct_io"
+};
+end note
+
+BusinessApp -> FUSE_Kernel: write(小日志1)
+FUSE_Kernel -> FUSE_PageCache: 写入FUSE层内核页缓存，更新文件最新长度
+FUSE_PageCache --> FUSE_Kernel: 缓存写入完成
+FUSE_Kernel --> BusinessApp: write 立即返回成功
+
+BusinessApp -> FUSE_Kernel: write(小日志2)
+FUSE_Kernel -> FUSE_PageCache: 追加数据到FUSE页缓存，更新文件偏移
+FUSE_PageCache --> FUSE_Kernel
+FUSE_Kernel --> BusinessApp: write 立即返回成功
+
+note over FUSE_Kernel,FUSE_PageCache: 满足batch_write / max_write阈值，内核打包为大块IO
+FUSE_Kernel -> Ulogfs: 下发聚合后的fuse_write批量请求
+Ulogfs -> TmpFS_PageCache: 批量写入底层TmpFS页缓存
+TmpFS_PageCache --> Ulogfs: 底层缓存写入完成
+Ulogfs -> FUSE_Kernel: fuse_reply_write(批量IO处理完成)
+note over FUSE_Kernel,FUSE_PageCache: 内核标记该段页缓存为干净页
+
+== 模式2：direct_io 绕过FUSE页缓存，必须ulogfs处理完成才返回 ==
+note over BusinessApp: 无FUSE内核页缓存，多次write全程阻塞，等待批量IO用户态处理完成
+BusinessApp -> FUSE_Kernel: write(小日志1)
+BusinessApp -> FUSE_Kernel: write(小日志2)
+
+note over FUSE_Kernel: 内核批量打包连续小IO，阻塞所有write调用
+FUSE_Kernel -> Ulogfs: 下发批量fuse_write请求
+Ulogfs -> TmpFS_PageCache: 批量写入TmpFS底层页缓存
+TmpFS_PageCache --> Ulogfs
+Ulogfs -> FUSE_Kernel: fuse_reply_write
+FUSE_Kernel --> BusinessApp: 两次write统一返回成功
+@enduml

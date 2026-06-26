@@ -1,0 +1,17 @@
+@startuml ABA防护时序图
+actor 消费者C
+participant "槽位i" as Slot
+actor 其他线程(生产者+消费者) as Other
+
+note over Slot: 初始状态 turn = i+1（数据就绪）
+消费者C -> Slot: try_pop读取下标i，校验turn==i+1，拿到数据
+消费者C -> 消费者C: 线程被操作系统调度挂起
+
+Other -> Slot: 消费ack，turn更新为 i+2（已消费）
+Other -> Slot: 环形复用，生产者等待turn回到i，写入新消息
+Other -> Slot: send后turn再次更新为 i+1
+
+消费者C --> Slot: 线程唤醒执行ack()
+note right of Slot: 虽然下标i、turn=i+1重复\n但属于全新一轮消息周期\n旧上下文被turn轮次隔离，避免重复消费(ABA)
+消费者C -> Slot: turn.store(i+2)，标记本轮消息已处理
+@enduml

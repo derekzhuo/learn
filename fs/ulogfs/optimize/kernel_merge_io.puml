@@ -1,0 +1,61 @@
+@startuml FUSE_Batch_IO_Opt_Timeline
+skinparam sequence {
+    Participant BackgroundColor #f0f8ff
+    Actor BackgroundColor #ffe4e1
+}
+
+actor "业务进程" as BusinessApp
+participant "FUSE内核驱动" as FUSE_Kernel
+participant "ulogfs(FUSE用户态)" as Ulogfs
+participant "tmpfs文件系统" as TmpFS
+participant "logtail(inotify采集)" as LogTail
+
+== 模式1：FUSE默认参数（无批量、无内核缓存）==
+note over BusinessApp
+每个小write单独触发一次FUSE回调，频繁上下文切换
+end note
+
+loop 3次连续小日志write
+    BusinessApp -> FUSE_Kernel: write(小日志片段)【用户→内核 切换】
+    FUSE_Kernel -> Ulogfs: fuse_write单次回调【内核→用户 切换】
+    Ulogfs -> TmpFS: pwrite写入小数据
+    TmpFS --> Ulogfs: 写入完成
+    Ulogfs -> FUSE_Kernel: fuse_reply_write
+    FUSE_Kernel --> BusinessApp: write返回
+    TmpFS -> LogTail: inotify MODIFY细碎事件
+end loop
+
+note over FUSE_Kernel
+每次getattr/lookup都穿透到ulogfs
+end note
+
+BusinessApp -> FUSE_Kernel: stat获取文件属性
+FUSE_Kernel -> Ulogfs: getattr回调
+Ulogfs -> TmpFS: stat底层文件
+TmpFS --> Ulogfs: 属性返回
+Ulogfs -> FUSE_Kernel: 回复属性
+FUSE_Kernel --> BusinessApp: stat返回
+
+== 模式2：内核批量IO+元数据缓存优化模式 ==
+note over BusinessApp
+3次连续小write内核合并为1次FUSE回调，元数据走内核缓存
+end note
+
+loop 3次连续小日志write
+    BusinessApp -> FUSE_Kernel: write(小日志片段)
+end loop
+note over FUSE_Kernel: batch_write聚合为128KB大块IO，内核排队缓冲
+FUSE_Kernel -> Ulogfs: 单次fuse_write下发合并后大块数据【仅1次上下文切换】
+Ulogfs -> TmpFS: 单次大块pwrite写入
+TmpFS --> Ulogfs: 批量写入完成
+Ulogfs -> FUSE_Kernel: fuse_reply_write
+FUSE_Kernel --> BusinessApp: 全部write依次返回
+TmpFS -> LogTail: 单次inotify MODIFY事件
+
+note over FUSE_Kernel
+entry/attr缓存命中，直接内核返回，不进入ulogfs
+end note
+
+BusinessApp -> FUSE_Kernel: stat获取文件属性
+FUSE_Kernel --> BusinessApp: 内核缓存直接返回属性，无用户态切换
+@enduml

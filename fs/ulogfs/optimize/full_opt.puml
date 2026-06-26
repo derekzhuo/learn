@@ -1,0 +1,51 @@
+@startuml FUSE_Opt_Full_Timeline
+skinparam sequence {
+    Participant BackgroundColor #f0f8ff
+    Actor BackgroundColor #ffe4e1
+}
+
+actor BusinessApp
+participant FUSE_Kernel
+participant "FUSE Page Cache" as FUSE_PageCache
+participant Ulogfs
+participant "Ulogfs单文件用户态缓冲区" as UserBuf
+participant "TmpFS Page Cache" as TmpFS_PageCache
+participant LogTail
+
+== 阶段1：业务多次小write，FUSE内核页缓存接收并批量聚合 ==
+note over BusinessApp: kernel_cache开启，写入FUSE页缓存立即返回，不阻塞ulogfs
+BusinessApp -> FUSE_Kernel: write(小日志片段1)
+FUSE_Kernel -> FUSE_PageCache: 写入FUSE内核页缓存，更新文件长度
+FUSE_Kernel --> BusinessApp: write 立即返回成功
+
+BusinessApp -> FUSE_Kernel: write(小日志片段2)
+FUSE_Kernel -> FUSE_PageCache: 追加到FUSE页缓存
+FUSE_Kernel --> BusinessApp: write 立即返回成功
+
+note over FUSE_Kernel,FUSE_PageCache: 触发batch_write/max_write，内核打包大块IO
+FUSE_Kernel -> Ulogfs: 下发聚合后的fuse_write请求
+
+== 阶段2：FUSE异步IO：ulogfs深拷贝数据、投递后台线程，不立刻reply ==
+note over Ulogfs: 1.数据深拷贝防止内核缓冲区失效\n2.封装异步任务投递线程池\n3.回调函数直接return，不阻塞内核
+Ulogfs -> Ulogfs: 数据深拷贝到堆内存，封装异步Write任务
+Ulogfs -> UserBuf: 投递异步任务至单文件缓冲区队列
+Ulogfs --> FUSE_Kernel: fuse_write回调函数返回
+
+== 阶段3：后台线程消费用户态缓冲区，二次批量聚合刷盘 ==
+note over UserBuf: 满足缓冲区阈值 / 超时触发批量刷盘
+UserBuf -> Ulogfs: 取出缓冲区全部聚合数据
+Ulogfs -> TmpFS_PageCache: 单次大块pwrite写入TmpFS页缓存
+TmpFS_PageCache --> Ulogfs: 写入完成
+Ulogfs -> FUSE_Kernel: fuse_reply_write(本次批量所有IO依次应答)
+note over FUSE_PageCache: 内核将对应页标记为干净页
+
+== 阶段4：数据落地TmpFS，触发inotify日志采集 ==
+TmpFS_PageCache -> LogTail: IN_MODIFY事件，logtail采集日志
+
+== 阶段5：fsync强制落盘场景：等待所有异步任务+用户缓冲区刷盘完成 ==
+BusinessApp -> FUSE_Kernel: fsync()
+FUSE_Kernel -> Ulogfs: fuse_fsync回调触发
+Ulogfs -> UserBuf: 阻塞等待当前文件所有异步任务、缓冲区全部刷入TmpFS
+Ulogfs -> FUSE_Kernel: fuse_reply_fsync()
+FUSE_Kernel --> BusinessApp: fsync返回，数据持久化可靠
+@enduml
