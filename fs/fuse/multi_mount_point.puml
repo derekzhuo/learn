@@ -1,0 +1,65 @@
+@startuml Single_Process_Multi_Mount_Fuse
+skinparam sequence {
+    Participant {
+        BackgroundColor #f0f8ff
+    }
+}
+
+actor MainProcess as "ulogfs主进程"
+participant "全局Epoll管理器" as EpollMgr
+participant "挂载A上下文" as MountA
+participant "挂载B上下文" as MountB
+participant "/dev/fuse字符设备" as DevFuse
+participant "内核VFS+FUSE驱动" as Kernel
+
+== 阶段1：初始化全局Epoll事件循环 ==
+MainProcess -> EpollMgr: epoll_create() 创建全局epoll实例
+EpollMgr -> EpollMgr: 初始化挂载上下文管理数组
+
+== 阶段2：依次挂载挂载点A：创建独立FUSE会话 ==
+MainProcess -> DevFuse: open("/dev/fuse", O_RDWR)
+DevFuse --> MountA: 返回挂载A专属fd_A
+MainProcess -> Kernel: mount(target="/mnt/ulog_a", fuse_fd=fd_A)
+Kernel -> Kernel: 创建独立FUSE会话conn_A，绑定挂载目录与fd_A
+MainProcess -> EpollMgr: epoll_ctl注册fd_A，监听EPOLLIN可读事件
+EpollMgr -> EpollMgr: 建立fd_A → MountA上下文映射关系
+MainProcess -> MountA: 初始化A的文件表、用户缓冲区、业务线程池
+
+== 阶段3：依次挂载挂载点B：创建独立FUSE会话 ==
+MainProcess -> DevFuse: open("/dev/fuse", O_RDWR)
+DevFuse --> MountB: 返回挂载B专属fd_B
+MainProcess -> Kernel: mount(target="/mnt/ulog_b", fuse_fd=fd_B)
+Kernel -> Kernel: 创建独立FUSE会话conn_B，绑定挂载目录与fd_B
+MainProcess -> EpollMgr: epoll_ctl注册fd_B，监听EPOLLIN可读事件
+EpollMgr -> EpollMgr: 建立fd_B → MountB上下文映射关系
+MainProcess -> MountB: 初始化B的文件表、用户缓冲区、业务线程池
+
+== 阶段4：全局epoll阻塞等待所有挂载点IO事件 ==
+loop 事件循环永久运行
+MainProcess -> EpollMgr: epoll_wait() 阻塞监听所有注册FD
+alt 挂载A的fd_A触发可读事件
+    EpollMgr --> MainProcess: 通知fd_A就绪
+    MainProcess -> MountA: 根据fd匹配挂载A上下文
+    MountA -> DevFuse: read(fd_A) 读取内核下发的FUSE请求
+    MountA -> MountA: 解析请求类型(write/read/getattr)，执行对应业务回调
+    MountA -> MountA: 异步写入tmpfs、用户态缓冲区聚合处理
+    MountA -> DevFuse: write(fd_A) 调用FUSE协议应答内核
+else 挂载B的fd_B触发可读事件
+    EpollMgr --> MainProcess: 通知fd_B就绪
+    MainProcess -> MountB: 根据fd匹配挂载B上下文
+    MountB -> DevFuse: read(fd_B) 读取内核下发的FUSE请求
+    MountB -> MountB: 执行挂载B独立的业务回调逻辑
+    MountB -> DevFuse: write(fd_B) 应答内核
+else 管控信号/升级IPC事件FD就绪
+    EpollMgr --> MainProcess: 处理全局管控、升级冻结等事件
+end alt
+end loop
+
+== 补充：挂载请求路由隔离说明 ==
+note over Kernel,EpollMgr
+访问/mnt/ulog_a的IO只会下发到fd_A
+访问/mnt/ulog_b的IO只会下发到fd_B
+两个挂载请求在内核层隔离，不会相互串扰
+通过FD映射精准路由到对应挂载上下文
+end note
+@enduml

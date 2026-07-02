@@ -1,0 +1,31 @@
+@startuml Fuse_Open_Mount_Detail
+title "如何拿到mount point的请求"
+participant UserProcess as "ulogfs进程"
+participant DevFuse as "/dev/fuse字符设备"
+participant KernelVFS as "内核VFS/FUSE驱动"
+
+== 步骤1：打开设备，不需要挂载点信息 ==
+UserProcess -> DevFuse: open("/dev/fuse", O_RDWR)
+DevFuse --> UserProcess: 返回独立fuse_fd
+note over UserProcess,KernelVFS
+当前仅拿到设备句柄，未绑定任何挂载目录
+没有任何业务IO会投递到该fd
+end note
+
+== 步骤2：mount绑定，必须传入挂载点路径 ==
+UserProcess -> KernelVFS: mount
+note over UserProcess, KernelVFS
+    target="/mnt/ulogfs", // 必须指定挂载点
+    fstype="fuse",
+    mount_flags,
+    挂载参数+前面拿到的fuse_fd
+end note
+
+KernelVFS -> KernelVFS: 在内核创建fuse_conn会话
+KernelVFS -> KernelVFS: 将挂载目录、超级块、fuse_fd三者绑定
+
+== 步骤3：开始监听FD处理当前挂载点的IO请求 ==
+UserProcess -> DevFuse: read(fuse_fd) 阻塞等待内核请求
+KernelVFS -> DevFuse: 业务访问/mnt/ulogfs的IO下发至该fd
+DevFuse --> UserProcess: 读取到FUSE请求并处理
+@enduml

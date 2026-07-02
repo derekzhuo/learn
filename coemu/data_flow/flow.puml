@@ -1,0 +1,114 @@
+@startuml DPIC_Dpic_Record_Replay_Full_Sequence
+' 全局样式配置
+skinparam sequence {
+    Actor {
+        BackgroundColor #lightblue
+    }
+    Participant {
+        BackgroundColor #lightgreen
+    }
+    Database {
+        BackgroundColor #lightyellow
+    }
+}
+skinparam note {
+    BackgroundColor #whitesmoke
+    BorderColor #gray
+}
+
+' ===================== 所有参与者定义 =====================
+actor "TestBench" as TB
+participant "Daemon\n(DPIC转发/录制/回放)" as DAEMON
+participant "Coemu IP" as COEMU
+participant "MCLK Manager" as MCLK_MGR
+database "DPIC录制文件\n(DPIC报文+MCLK时间戳)" as REC_FILE
+
+title DPIC 三大阶段完整时序：Golden / Record / Replay（双方案）
+note over TB, REC_FILE
+传输通道：Channel 2 DMA
+主机侧交互：共享内存 H2C/C2H
+录制规则：仅记录TB→Coemu下行报文，通过Type128获取MCLK时间戳
+回放规则：TestBench退出，Daemon模拟TB下发激励
+end note
+
+' ===================== 阶段1：Golden 标准基准阶段 =====================
+== 阶段1：Golden 基准阶段（纯消息透传，无录制） ==
+note over TB, REC_FILE
+业务逻辑：
+1. TB与Coemu IP通过Daemon做中间转发
+2. 上行C2H、下行H2C双向DMA报文透传
+3. 不做报文缓存、时间戳采集、落盘存储
+end note
+
+' H2C：主机 -> Coemu
+TB -> DAEMON: [H2C] DPIC DMA报文(共享内存写入)
+DAEMON -> COEMU: Channel2 DMA 透传原始报文
+
+' C2H：Coemu -> 主机
+COEMU -> DAEMON: [C2H] Coemu响应DMA报文
+DAEMON -> TB: 共享内存回传响应报文
+
+' ===================== 阶段2：Record 录制阶段（绑定MCLK时间戳落盘） =====================
+== 阶段2：Record 录制阶段（Type128获取MCLK，报文+时钟绑定存储） ==
+note over TB, REC_FILE
+业务规则：
+1. 仅录制TB下发H2C方向DPIC报文，C2H上行响应只透传不录制
+2. Daemon先缓存下行DPIC报文，等待Coemu返回Type=128时钟ACK包
+3. 拿到MCLK后，报文+时间戳绑定写入本地录制文件
+end note
+
+TB -> DAEMON: [H2C] 下发DPIC DMA报文(共享内存)
+note right of DAEMON: 缓存当前DPIC报文，阻塞等待Type128 MCLK应答包
+DAEMON -> COEMU: Channel2 DMA 透传DPIC业务报文
+
+' Coemu收到业务报文，返回Type128携带当前MCLK时钟
+COEMU -> DAEMON: Type=128 DMA报文，上报当前MCLK时间戳
+DAEMON -> REC_FILE: 绑定【DPIC报文 + MCLK】持久化落盘保存
+
+' C2H上行响应，仅透传不录制
+COEMU -> DAEMON: [C2H] Coemu返回响应报文
+DAEMON -> TB: 共享内存转发响应，不做任何录制
+
+' ===================== 阶段3：Replay 回放场景 方案1：MCLK Stop Event 低性能方案 =====================
+== 阶段3-1：Replay回放 - 方案1：MCLK Stop Event 时钟事件触发（低性能） ==
+note over DAEMON, REC_FILE
+回放前提：TestBench不再参与仿真，Daemon替代TB作为激励发送端
+流程逻辑：
+1. 遍历录制文件，预注册下一次需要发送报文对应的时钟周期
+2. MCLK运行到指定周期触发停止事件，回调Daemon执行报文下发
+3. Coemu返回的上行响应报文直接丢弃，不做处理
+end note
+
+loop 循环遍历所有录制时序报文
+    DAEMON -> REC_FILE: 读取下一条DPIC报文对应的next_cycle
+    DAEMON -> MCLK_MGR: 注册时钟停止事件：到达next_cycle触发回调
+    MCLK_MGR -> MCLK_MGR: MCLK时钟持续运行
+    MCLK_MGR -> DAEMON: 时钟抵达next_cycle，事件回调通知
+    DAEMON -> REC_FILE: 根据时钟周期查询绑定的DPIC原始报文
+    DAEMON -> COEMU: Channel2 DMA下发录制的DPIC激励报文
+    COEMU -> DAEMON: Coemu返回C2H响应报文
+    note right of DAEMON: 直接丢弃上行响应，不回传、不处理
+end loop
+
+' ===================== 阶段4：Replay 回放场景 方案2：Coemu Type132主动上报 高性能方案 =====================
+== 阶段3-2：Replay回放 - 方案2：Coemu Type132事件上报（高性能） ==
+note over DAEMON, REC_FILE
+优化点：不再依赖MCLK Manager事件回调，由Coemu IP主动上报时钟到达事件
+1. Daemon预先下发期待触发的时钟周期给Coemu
+2. Coemu运行到目标周期后通过Type=132报文主动通知Daemon
+3. 解析报文后下发DPIC激励，循环预注册下一次时钟周期
+end note
+
+loop 循环遍历所有录制时序报文
+    DAEMON -> REC_FILE: 读取下一条DPIC报文对应的next_cycle
+    DAEMON -> COEMU: DMA预注册报文：期待时钟到达next_cycle
+    COEMU -> COEMU: MCLK时钟持续运行
+    COEMU -> DAEMON: Type=132 DMA报文：通知已到达目标next_cycle
+    DAEMON -> REC_FILE: 根据时钟读取绑定DPIC录制报文
+    DAEMON -> COEMU: Channel2 DMA下发DPIC激励报文
+    COEMU -> DAEMON: Coemu返回C2H响应报文
+    note right of DAEMON: 直接丢弃上行响应数据
+    DAEMON -> COEMU: 预注册下一轮待触发next_cycle
+end loop
+
+@enduml

@@ -1,0 +1,68 @@
+@startuml testbench register with daemon
+title Coemu Session的创建过程
+skinparam BoxPadding 20
+
+participant uv_shell
+
+box tb #LightGreen
+    participant testbench
+    queue "requestQ" as shmQ
+    participant dmiThread
+end box
+
+box shmQ #LightSalmon
+    queue producer
+    queue consumer
+end box
+
+box daemon #LightBlue
+    participant "sessRunningThread" as daemon
+    queue "dmiRequestQ" as dmiRequestQ
+    participant coemuDmaDpiThread
+end box
+
+uv_shell --> testbench: <<fork>>
+
+testbench -> testbench: registerCoemuActivePrototypingBoards
+activate testbench
+
+loop 注册每个board、fpga的coemu session
+    testbench -> daemon: coemu_registger [board, fpga, ip_ins] on tcp
+
+    activate daemon
+    daemon -> daemon: createCoemuSessionData
+    daemon -> daemon: createShmKey
+    daemon -[#red]-> producer**: create
+    daemon -[#red]-> consumer**: create
+    daemon --> dmiRequestQ: <<add session event>>
+    coemuDmaDpiThread <-- dmiRequestQ: processEvent
+    coemuDmaDpiThread --> coemuDmaDpiThread: create & store coemu session
+    note over coemuDmaDpiThread
+        创建coemu会话，写到内存
+    end note
+    daemon --> testbench: key from tcp
+    deactivate
+
+
+    testbench --> testbench++: addCoemuSessionData()
+    note right: 持有CoEmuSessionDataMgrClient
+        testbench <-[#red]- producer: load
+        testbench <-[#red]- consumer: load
+        testbench --> shmQ: addCoemuSession event
+    return
+
+    dmiThread <-- shmQ: create & store coemu session
+end loop
+
+note over dmiThread
+    使用producer、consumer与daemon实现数据通信
+    每个fpga都有一对单独的procuer及consumer
+end note
+
+note over coemuDmaDpiThread
+    使用producer、consumer与tb实现数据通信
+    每个fpga都有一对单独的procuer及consumer
+end note
+
+footer tb与daemon之间依赖shmq通信
+@enduml
